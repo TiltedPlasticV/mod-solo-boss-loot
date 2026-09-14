@@ -1,7 +1,7 @@
 [worldserver]
 
 ########################################
-# Dynamic Loot Rates
+# Solo Boss Loot
 ########################################
 #
 #    When a dungeon or raid boss (or a boss chest) is looted, the module adds that boss's own
@@ -19,30 +19,30 @@
 #    If more items qualify than the 18-slot loot window has room for, a random selection is added.
 #
 #    Boss chests, extra bosses and per-item exceptions live in the world database table
-#    `dynamic_loot_rates_overrides` (created by the module's data/sql/db-world SQL).
+#    `solo_boss_loot_overrides` (created by the module's data/sql/db-world SQL).
 #    Settings and that table are re-read on `.reload config`.
 #
 
 #
-#    DynamicLootRates.Enable
+#    SoloBossLoot.Enable
 #        Description: Enable the module.
 #        Default:     1 - Enabled
 #                     0 - Disabled
 #
 
-DynamicLootRates.Enable = 1
+SoloBossLoot.Enable = 1
 
 #
-#    DynamicLootRates.SkipOwnedItems
+#    SoloBossLoot.SkipOwnedItems
 #        Description: Don't add items a real player already has (equipped, in bags or in the bank).
 #        Default:     1 - Enabled
 #                     0 - Disabled
 #
 
-DynamicLootRates.SkipOwnedItems = 1
+SoloBossLoot.SkipOwnedItems = 1
 
 #
-#    DynamicLootRates.SharedPoolThreshold
+#    SoloBossLoot.SharedPoolThreshold
 #        Description: An item dropped by more than this many boss loot tables is a "shared pool" item
 #                     (e.g. Molten Core's recipes, dropped by 7 bosses).
 #                     Shared pool items are only added if they stay in your bags: armor, weapons,
@@ -54,4 +54,4 @@ DynamicLootRates.SkipOwnedItems = 1
 #        Default:     3
 #
 
-DynamicLootRates.SharedPoolThreshold = 3
+SoloBossLoot.SharedPoolThreshold = 3

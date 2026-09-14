@@ -47,10 +47,6 @@ local.properties
 .project
 .cproject
 
-#
-# Claude Code (local notes, not committed)
-#
-CLAUDE.md
 
 #
 # Visual Studio

@@ -1,5 +1,5 @@
 /*
- * mod-dynamic-loot-rates
+ * mod-solo-boss-loot
  *
  * When a dungeon or raid boss (or a boss chest) is looted, adds the boss's own loot that a real player in the
  * group can use and doesn't have yet. Bots are ignored. The normal loot roll is untouched; this only adds items.
@@ -8,7 +8,7 @@
  *   - only boss loot tables drop the item (no trash mob, world-drop list, container, ...)
  *   - items shared by many bosses are only kept if they can be kept (gear, bags, mounts, pets, recipes)
  *   - quest-required items are left to the normal roll, and hard-mode (LootMode) rules are kept
- * The `dynamic_loot_rates_overrides` world table adds boss chests and extra bosses, and forces items in or out.
+ * The `solo_boss_loot_overrides` world table adds boss chests and extra bosses, and forces items in or out.
  */
 
 #include "Config.h"
@@ -39,8 +39,8 @@
 
 namespace
 {
-    constexpr char const* LOG_NAME = "module.dlr";
-    constexpr char const* OVERRIDES_TABLE = "dynamic_loot_rates_overrides";
+    constexpr char const* LOG_NAME = "module.solo_boss_loot";
+    constexpr char const* OVERRIDES_TABLE = "solo_boss_loot_overrides";
 
     // ---------------------------------------------------------------------------
     // Configuration
@@ -56,9 +56,9 @@ namespace
 
     void LoadConfig()
     {
-        config.enabled             = sConfigMgr->GetOption<bool>("DynamicLootRates.Enable", true);
-        config.skipOwnedItems      = sConfigMgr->GetOption<bool>("DynamicLootRates.SkipOwnedItems", true);
-        config.sharedPoolThreshold = sConfigMgr->GetOption<uint32>("DynamicLootRates.SharedPoolThreshold", 3);
+        config.enabled             = sConfigMgr->GetOption<bool>("SoloBossLoot.Enable", true);
+        config.skipOwnedItems      = sConfigMgr->GetOption<bool>("SoloBossLoot.SkipOwnedItems", true);
+        config.sharedPoolThreshold = sConfigMgr->GetOption<uint32>("SoloBossLoot.SharedPoolThreshold", 3);
     }
 
     // ---------------------------------------------------------------------------
@@ -294,7 +294,7 @@ namespace
                         (include ? forcedItems : excludedItems).insert(entry);
                         break;
                     default:
-                        LOG_ERROR(LOG_NAME, "DLR: `{}` has unknown SourceType {} (Entry {}), skipped", OVERRIDES_TABLE, sourceType, entry);
+                        LOG_ERROR(LOG_NAME, "SoloBossLoot: `{}` has unknown SourceType {} (Entry {}), skipped", OVERRIDES_TABLE, sourceType, entry);
                         break;
                 }
 
@@ -303,7 +303,7 @@ namespace
         }
 
         if (!overrideCount)
-            LOG_WARN(LOG_NAME, "DLR: `{}` is empty or missing, so boss chests get no extra loot. "
+            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` is empty or missing, so boss chests get no extra loot. "
                 "Has the module's SQL been applied to the world database?", OVERRIDES_TABLE);
 
         // Boss creature loot ids: encounter bosses and boss-flagged creatures, plus their difficulty versions
@@ -435,7 +435,7 @@ namespace
             target[bossTables[i].lootId] = std::move(items);
         }
 
-        LOG_INFO(LOG_NAME, "DLR: Boss loot cache built: {} creature and {} chest loot tables, {} items, {} overrides in {} ms",
+        LOG_INFO(LOG_NAME, "SoloBossLoot: Boss loot cache built: {} creature and {} chest loot tables, {} items, {} overrides in {} ms",
             cache->creatureLoot.size(), cache->chestLoot.size(), itemCount, overrideCount, GetMSTimeDiffToNow(startTime));
 
         return cache;
@@ -446,7 +446,7 @@ namespace
         if (!config.enabled)
         {
             SetBossLootCache(nullptr);
-            LOG_INFO(LOG_NAME, "DLR: Module disabled");
+            LOG_INFO(LOG_NAME, "SoloBossLoot: Module disabled");
             return;
         }
 
@@ -662,11 +662,11 @@ namespace
     // ---------------------------------------------------------------------------
     // Scripts
     // ---------------------------------------------------------------------------
-    class DynamicLootRates_WorldScript : public WorldScript
+    class SoloBossLoot_WorldScript : public WorldScript
     {
     public:
-        DynamicLootRates_WorldScript()
-            : WorldScript("DynamicLootRates_WorldScript", { WORLDHOOK_ON_AFTER_CONFIG_LOAD, WORLDHOOK_ON_STARTUP }) { }
+        SoloBossLoot_WorldScript()
+            : WorldScript("SoloBossLoot_WorldScript", { WORLDHOOK_ON_AFTER_CONFIG_LOAD, WORLDHOOK_ON_STARTUP }) { }
 
         void OnAfterConfigLoad(bool reload) override
         {
@@ -683,11 +683,11 @@ namespace
         }
     };
 
-    class DynamicLootRates_MiscScript : public MiscScript
+    class SoloBossLoot_MiscScript : public MiscScript
     {
     public:
-        DynamicLootRates_MiscScript()
-            : MiscScript("DynamicLootRates_MiscScript", { MISCHOOK_ON_AFTER_LOOT_TEMPLATE_PROCESS }) { }
+        SoloBossLoot_MiscScript()
+            : MiscScript("SoloBossLoot_MiscScript", { MISCHOOK_ON_AFTER_LOOT_TEMPLATE_PROCESS }) { }
 
         void OnAfterLootTemplateProcess(Loot* loot, LootTemplate const* tab, LootStore const& store, Player* lootOwner,
             bool /*personal*/, bool /*noEmptyError*/, uint16 lootMode) override
@@ -718,7 +718,7 @@ namespace
             std::vector<Player*> const players = GetRealPlayers(lootOwner);
             if (players.empty())
             {
-                LOG_DEBUG(LOG_NAME, "DLR: [{}] No real players in the instance, nothing added", sourceName);
+                LOG_DEBUG(LOG_NAME, "SoloBossLoot: [{}] No real players in the instance, nothing added", sourceName);
                 return;
             }
 
@@ -765,14 +765,14 @@ namespace
             for (LootStoreItem const& pick : picks)
                 loot->AddItem(pick);
 
-            LOG_DEBUG(LOG_NAME, "DLR: [{}] {} boss items, {} wanted by {} real player(s), {} free slots, {} added",
+            LOG_DEBUG(LOG_NAME, "SoloBossLoot: [{}] {} boss items, {} wanted by {} real player(s), {} free slots, {} added",
                 sourceName, bossItems->size(), wantedCount, players.size(), freeSlots, picks.size());
         }
     };
 }
 
-void AddDynamicLootRateScripts()
+void AddSoloBossLootScripts()
 {
-    new DynamicLootRates_WorldScript();
-    new DynamicLootRates_MiscScript();
+    new SoloBossLoot_WorldScript();
+    new SoloBossLoot_MiscScript();
 }

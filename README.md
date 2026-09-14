@@ -1,4 +1,4 @@
-# mod-dynamic-loot-rates
+# mod-solo-boss-loot
 
 An AzerothCore module for solo players. When you loot a dungeon or raid boss, or a boss chest, the module adds that boss's own loot for your class, so you can gear up without farming the same boss over and over.
 
@@ -15,21 +15,21 @@ The normal loot roll still happens; the module only adds items. Anything you alr
 
 ## Installation
 
-1. Clone this repository into your AzerothCore `modules` folder.
+1. Clone this repository into your AzerothCore `modules` folder. The folder must be named `mod-solo-boss-loot`.
 2. Re-run CMake and rebuild.
-3. Make sure `data/sql/db-world/base/dynamic_loot_rates_overrides.sql` is applied to your world database. The database updater does this automatically if it's enabled.
-4. Copy `mod_dynamic_loot_rates.conf.dist` to `mod_dynamic_loot_rates.conf` in your configs folder.
+3. Make sure `data/sql/db-world/base/solo_boss_loot_overrides.sql` is applied to your world database. The database updater does this automatically if it's enabled.
+4. Copy `mod_solo_boss_loot.conf.dist` to `mod_solo_boss_loot.conf` in your configs folder.
 
 ## Configuration
 
 | Setting | Default | Description |
 |---|---|---|
-| `DynamicLootRates.Enable` | 1 | Turn the module on or off |
-| `DynamicLootRates.SkipOwnedItems` | 1 | Skip items you already have (equipped, in bags or in the bank) |
-| `DynamicLootRates.SharedPoolThreshold` | 3 | Items dropped by more than this many bosses are only added if you keep them (gear, bags, mounts, pets, recipes) |
+| `SoloBossLoot.Enable` | 1 | Turn the module on or off |
+| `SoloBossLoot.SkipOwnedItems` | 1 | Skip items you already have (equipped, in bags or in the bank) |
+| `SoloBossLoot.SharedPoolThreshold` | 3 | Items dropped by more than this many bosses are only added if you keep them (gear, bags, mounts, pets, recipes) |
 
 ## Overrides
 
-The `dynamic_loot_rates_overrides` world table lists the boss chests, and lets you mark extra bosses or force items in or out. The SQL file explains the columns.
+The `solo_boss_loot_overrides` world table lists the boss chests, and lets you mark extra bosses or force items in or out. The SQL file explains the columns.
 
 Changes to the settings or the table apply on server restart or `.reload config`.

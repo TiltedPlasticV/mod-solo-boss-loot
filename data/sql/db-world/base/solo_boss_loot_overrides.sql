@@ -1,4 +1,4 @@
--- mod-dynamic-loot-rates: boss chests, extra bosses and per-item exceptions
+-- mod-solo-boss-loot: boss chests, extra bosses and per-item exceptions
 --
 -- SourceType  Entry from            Mode 1 (include)                                  Mode 0 (exclude)
 -- 0           creature_template     treat this creature as a boss                     never treat it as a boss
@@ -11,7 +11,7 @@
 -- Changes take effect on server start or `.reload config`.
 -- Rows use INSERT IGNORE, so your own edits survive if this file is applied again.
 
-CREATE TABLE IF NOT EXISTS `dynamic_loot_rates_overrides` (
+CREATE TABLE IF NOT EXISTS `solo_boss_loot_overrides` (
     `SourceType` TINYINT UNSIGNED NOT NULL COMMENT '0 = creature, 1 = gameobject (boss chest), 2 = item',
     `Entry`      INT UNSIGNED     NOT NULL,
     `Mode`       TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '1 = include, 0 = exclude',
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS `dynamic_loot_rates_overrides` (
     PRIMARY KEY (`SourceType`, `Entry`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT IGNORE INTO `dynamic_loot_rates_overrides` (`SourceType`, `Entry`, `Mode`, `Comment`) VALUES
+INSERT IGNORE INTO `solo_boss_loot_overrides` (`SourceType`, `Entry`, `Mode`, `Comment`) VALUES
 -- Classic
 (1, 179703, 1, 'Molten Core - Cache of the Firelord (Majordomo Executus)'),
 (1, 169243, 1, 'Blackrock Depths - Chest of The Seven'),
