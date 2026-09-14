@@ -25,7 +25,7 @@
 
 #
 #    SoloBossLoot.Enable
-#        Description: Enable the module.
+#        Description: Enable the module (boss loot and world drops).
 #        Default:     1 - Enabled
 #                     0 - Disabled
 #
@@ -35,6 +35,7 @@ SoloBossLoot.Enable = 1
 #
 #    SoloBossLoot.SkipOwnedItems
 #        Description: Don't add items a real player already has (equipped, in bags or in the bank).
+#                     Applies to boss loot and world drops.
 #        Default:     1 - Enabled
 #                     0 - Disabled
 #
@@ -55,3 +56,100 @@ SoloBossLoot.SkipOwnedItems = 1
 #
 
 SoloBossLoot.SharedPoolThreshold = 3
+
+########################################
+# World drops
+########################################
+#
+#    When any other creature is looted (not a boss, not in a battleground or arena), the module may
+#    add one of that creature's rare items at a boosted chance.
+#
+#    At startup the module works out how likely each item is to drop from each creature, through
+#    reference tables and loot groups, using the server's Rate.Drop.Item.* settings.
+#    A rare item drops less often than MaxItemChance, is at least MinQuality, and is something you
+#    keep: weapons, armor, bags, quivers, recipes, mounts or pets. Quest items are never boosted.
+#
+#    For each creature, the rare items' chances are pulled toward each other (CompressionRatio),
+#    weighted (QualityWeights, RecipeWeight) and scaled so that at least one of them drops
+#    MaxCombinedChance of the time. No item drops less often than before, or more often than
+#    MaxItemChance. Creatures whose rare items already drop that often are left alone.
+#
+#    At most one extra item is added per kill. A real player in the group who is close enough to share
+#    the kill must want it, using the same checks as boss loot. Recipes also need a real player with
+#    that profession. Items nobody wants don't drop, and aren't replaced by something else.
+#
+#    The boost is worked out from the world database, so if its drop chances were already raised by
+#    hand, revert those edits first or they get boosted twice.
+#
+
+#
+#    SoloBossLoot.WorldDrop.Enable
+#        Description: Boost rare drops from creatures that aren't bosses.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+#
+
+SoloBossLoot.WorldDrop.Enable = 1
+
+#
+#    SoloBossLoot.WorldDrop.MinQuality
+#        Description: Lowest item quality that counts as a rare item.
+#        Default:     2 - Uncommon (green)
+#                     3 - Rare (blue)
+#                     4 - Epic (purple)
+#
+
+SoloBossLoot.WorldDrop.MinQuality = 2
+
+#
+#    SoloBossLoot.WorldDrop.MaxItemLevel
+#        Description: Only items below this item level are boosted.
+#        Default:     0 - No limit
+#
+
+SoloBossLoot.WorldDrop.MaxItemLevel = 0
+
+#
+#    SoloBossLoot.WorldDrop.MaxItemChance
+#        Description: Items that drop at least this often (in %) aren't boosted, and boosted items
+#                     never drop more often than this.
+#        Default:     5
+#
+
+SoloBossLoot.WorldDrop.MaxItemChance = 5
+
+#
+#    SoloBossLoot.WorldDrop.MaxCombinedChance
+#        Description: Chance (in %) that at least one of a creature's rare items drops, after the boost.
+#                     Includes the normal roll.
+#        Default:     15
+#
+
+SoloBossLoot.WorldDrop.MaxCombinedChance = 15
+
+#
+#    SoloBossLoot.WorldDrop.CompressionRatio
+#        Description: How far rare items' chances are pulled toward each other before they are scaled.
+#                     0 keeps their relative chances, 1 gives them all the same chance.
+#        Default:     0.8
+#
+
+SoloBossLoot.WorldDrop.CompressionRatio = 0.8
+
+#
+#    SoloBossLoot.WorldDrop.QualityWeights
+#        Description: Weights for uncommon, rare and epic (or better) items, applied after compression.
+#                     "1 3 6" makes an epic about 6 times as likely to drop as a comparable green.
+#        Default:     "1 3 6"
+#
+
+SoloBossLoot.WorldDrop.QualityWeights = "1 3 6"
+
+#
+#    SoloBossLoot.WorldDrop.RecipeWeight
+#        Description: Extra weight for recipes (patterns, plans, formulas, ...), multiplied with the
+#                     quality weight. Below 1 makes recipes drop less often than gear.
+#        Default:     0.75
+#
+
+SoloBossLoot.WorldDrop.RecipeWeight = 0.75

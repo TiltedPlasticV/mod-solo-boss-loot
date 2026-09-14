@@ -1,6 +1,6 @@
 # mod-solo-boss-loot
 
-An AzerothCore module for solo players. When you loot a dungeon or raid boss, or a boss chest, the module adds that boss's own loot for your class, so you can gear up without farming the same boss over and over.
+An AzerothCore module for solo players. When you loot a dungeon or raid boss, or a boss chest, the module adds that boss's own loot for your class, so you can gear up without farming the same boss over and over. Rare drops from other creatures also show up more often.
 
 Built for the mod-playerbots fork of AzerothCore. Bots are ignored: only real players count.
 
@@ -12,6 +12,18 @@ Built for the mod-playerbots fork of AzerothCore. Bots are ignored: only real pl
 - Hard-mode loot, only when you did the hard mode
 
 The normal loot roll still happens; the module only adds items. Anything you already own is skipped. If there is more loot than the 18-slot loot window can hold, a random selection is added.
+
+## World drops
+
+Other creatures (not bosses, not in battlegrounds) sometimes add one extra rare item:
+
+- Rare means it normally drops less than 5% of the time, is green or better, and is something you keep: gear, bags, recipes, mounts or pets
+- Very rare items get the biggest boost, and blues and epics are favored over greens
+- The item must be one a real player in your group can use and doesn't have yet
+- Recipes only drop for professions someone in your group has
+- Quest items are never boosted
+
+The boost is worked out from your world database at startup. If you raised drop chances there by hand, revert those edits first.
 
 ## Installation
 
@@ -27,6 +39,14 @@ The normal loot roll still happens; the module only adds items. Anything you alr
 | `SoloBossLoot.Enable` | 1 | Turn the module on or off |
 | `SoloBossLoot.SkipOwnedItems` | 1 | Skip items you already have (equipped, in bags or in the bank) |
 | `SoloBossLoot.SharedPoolThreshold` | 3 | Items dropped by more than this many bosses are only added if you keep them (gear, bags, mounts, pets, recipes) |
+| `SoloBossLoot.WorldDrop.Enable` | 1 | Turn world drops on or off |
+| `SoloBossLoot.WorldDrop.MinQuality` | 2 | Lowest quality that counts as rare (2 green, 3 blue, 4 epic) |
+| `SoloBossLoot.WorldDrop.MaxItemLevel` | 0 | Only boost items below this item level (0 for no limit) |
+| `SoloBossLoot.WorldDrop.MaxItemChance` | 5 | Items dropping at least this often (%) aren't boosted, and boosted items stay below it |
+| `SoloBossLoot.WorldDrop.MaxCombinedChance` | 15 | Chance (%) that one of a creature's rare items drops |
+| `SoloBossLoot.WorldDrop.CompressionRatio` | 0.8 | How much rare items' chances are evened out (0 to 1) |
+| `SoloBossLoot.WorldDrop.QualityWeights` | "1 3 6" | Weights for green, blue and epic items |
+| `SoloBossLoot.WorldDrop.RecipeWeight` | 0.75 | Extra weight for recipes |
 
 ## Overrides
 

@@ -23,17 +23,18 @@ Goals:
 - Very rare drops (e.g. Baron Rivendare's Deathcharger's Reins, 1%) should drop at the same chance as that boss's other unique items.
 - 100% of every boss's unique loot isn't expected (some bosses have more than the 18-slot loot window). Aim for a good middle ground.
 - Class filtering is fine, but it must never cause quest items or misc items to be lost.
+- Super rare world drops (rare greens at low level, blues, epics) should turn up now and then, without filling bags
+  and without boosting common drops at all.
 
-## How boss loot works
 Files:
 - `src/mod_solo_boss_loot.cpp`: all the code
-- `conf/mod_solo_boss_loot.conf.dist`: settings `SoloBossLoot.Enable`, `.SkipOwnedItems`, `.SharedPoolThreshold`
+- `conf/mod_solo_boss_loot.conf.dist`: settings `SoloBossLoot.Enable`, `.SkipOwnedItems`, `.SharedPoolThreshold`, `.WorldDrop.*`
 - `data/sql/db-world/base/solo_boss_loot_overrides.sql`: overrides table and the boss chest list
 
+## How boss loot works
 History: this module started as a fork of hallgaeuer/mod-dynamic-loot-rates. Its dungeon/raid loot rate settings
 (`Dungeon.Rate.*`, `Raid.Rate.*`, via `OnAfterCalculateLootGroupAmount` / `OnAfterRefCount`) and a first
 "guaranteed boss loot" attempt (`Boss.GuaranteedLoot` / `SharedThreshold`) were removed and replaced by the design below.
-Boosting non-boss loot is out of scope for now.
 Rejected idea: extra hidden re-rolls of the boss table (very rare items still wouldn't show up).
 
 ### At startup and on `.reload config`: build a loot list per boss loot table
@@ -74,7 +75,7 @@ Rejected idea: extra hidden re-rolls of the boss table (very rare items still wo
   - `LootItem::AllowedForPlayer` passes (conditions, faction, recipes hidden without the profession,
     finished quest starters), so items they couldn't see don't waste slots
   - This means **any recipe not yet known** is added, even for professions the player doesn't have,
-    unless core hides it from them.
+    unless core hides it from them. (World drops differ: they need the profession.)
 - Items already in the loot window, or not matching the kill's LootMode, are skipped.
 - **Specials get no preference.** Everything wanted is treated the same:
   if it all fits in the free slots it all drops (no shuffle); if not, a random pick is made with equal odds for each item.
@@ -91,10 +92,80 @@ Rejected idea: extra hidden re-rolls of the boss table (very rare items still wo
 - `.reload` of loot tables alone doesn't rebuild the cache; run `.reload config` afterwards.
 - Chest of The Seven (BRD) is listed, but its gear also drops from BRD trash, so it adds nothing.
 
+## How world drops work
+History: replaces the developer's hand-run SQL scripts, which multiplied `creature_loot_template.Chance` for rare
+weapon/armor rows (x150 below 0.02%, x35 otherwise, capped at 5%) and then compressed and throttled each creature
+to a 15% combined chance. Doing it in the module needs no DB edits and follows DB updates.
+If a world DB still has those edits, they must be reverted first or they get boosted twice.
+
+Decisions (made with the developer):
+- **Per item, not per row.** The boost works on the chance of one specific item dropping from a kill, followed through
+  references and groups. Boosting rows would boost whole reference packs (greys and whites included), and
+  misses vanilla level-band packs completely (see data below).
+- **Keepable items only** (same list as boss loot), quality >= `MinQuality` (default green, rare greens are fun).
+- **Wants check reused from boss loot**, plus: recipes need a real player with the profession (`RequiredSkill`).
+- **At most one extra item per kill.**
+- **No multiplier tiers.** The SQL's tiers barely mattered: 93.5% of tables were throttled anyway. Dropped for a simpler config.
+- **Quality weights** (default 1/3/6) so the budget isn't mostly greens, and a **recipe weight** (default 0.75).
+- **No item level limit** by default (the SQL used < 100, which left Northrend with almost no gear).
+
+### At startup and on `.reload config`: build a world drop table per creature loot table
+- **Which tables:** loot ids of every creature template that isn't a boss (same flags and overrides as boss loot),
+  skipping boss difficulty versions.
+- **Drop chance per item** (`AddDropChances`), mirroring core at `LOOT_MODE_DEFAULT` with the server rates:
+  - ungrouped rows: `Chance x Rate.Drop.Item.<quality>`, references `Chance x Rate.Drop.Item.Referenced`, 100% rows always
+  - groups (`LootGroup::Roll`): explicit chances take the roll in row order, the rest is shared by equal-chanced rows;
+    no rates. Top-level groups repeat items `Rate.Drop.Item.GroupAmount` times.
+  - references repeat `MaxCount x Rate.Drop.Item.ReferencedAmount` times, max depth 8
+  - chances along a path multiply, several paths add up (expected drops, fine for rare items)
+- **Rare items:** chance above 0 and below `MaxItemChance` (5%), keepable, quality >= `MinQuality`, below `MaxItemLevel`
+  (0 = no limit), not quest-bound, not a quest starter, not a quest objective (`Quest::RequiredItemId`).
+  Quest-required rows are skipped.
+- **Boost** (`BuildWorldDropTable`):
+  - if the rare items' combined chance is already >= `MaxCombinedChance`, the table gets nothing
+  - compress toward the geometric mean: `chance^(1-r) x mean^r` (`CompressionRatio` r, default 0.8)
+  - multiply by the quality weight (green, blue, epic+) and `RecipeWeight` for recipes
+  - binary search a scale so the combined chance hits `MaxCombinedChance`; each item is floored at its original
+    chance and capped at `MaxItemChance`
+  - extra roll per item `(boosted - original) / (1 - original)`, table chance = combined extra chance
+- Identical tables are shared (many creatures use the same reference packs).
+
+### At each non-boss creature kill
+- Creature loot only, default loot mode, not in a battleground or arena, creature isn't a boss (`IsBoss`: same check
+  as boss loot, including overrides; this also covers open-world world bosses). The `lootid` must match the template.
+- Roll the table chance first; everything else only runs on a hit (about 7-14% of kills).
+- Needs a real player in the group, in the same map and at group reward distance (`IsAtGroupRewardDistance`).
+- Wanted items: not already in the window, and `PlayerWantsItem` passes for any real player (with the profession check).
+- A second roll accepts with `P(any wanted) / P(table)`, so each wanted item keeps its own chance and unwanted items
+  just don't drop (they are not replaced).
+- Pick one wanted item weighted by its extra chance. Only then copy conditions and check `AllowedForPlayer`
+  (copying for hundreds of items would be slow); if that fails, drop it from the list and pick again.
+- Added with `Loot::AddItem`, skipped if the window is full.
+
+### Data behind the decisions (base world DB, all server rates 1.0)
+- Rare drops are stored three ways: direct rows (Scarlet Monk's 0.02% blues), old-style packs (1-2% reference row to
+  10 blues or ~100 greens, per item ~0.01-0.05%), and **vanilla level-band packs**: a `Chance 0` grouped reference
+  (e.g. Defias Pillager: group 5 picks 1000114 or 1000115) to 150-400 mixed-quality items with their own groups.
+  The SQL scripts left those at 0.
+- 7,172 non-boss loot tables, 6,706 with rare items, 4,046 distinct rare items (no item level limit).
+- With the defaults: 5,869 tables hit 15%, 491 are already above it, 346 (1-3 rare items) end with every item at 5%.
+- Per item median: green 0.010% to 0.035%, blue 0.005% to 0.085%, epic 0.004% to 0.12%.
+- Extra item chance per kill (median): 14% at level 1-10 down to 7% at 71-80. After the wants check for a warrior,
+  hunter or priest with two professions: about 2-7%.
+- Recipe share of bonus drops for a player with two professions: 12-16% at weight 1, 9-13% at 0.75, 7-9% at 0.5.
+
+### Known gaps / ideas
+- `.reload` of loot tables alone doesn't rebuild the cache; run `.reload config` afterwards.
+- Loot modes other than default (rare for non-bosses) get no world drops.
+
 ## Core facts worth knowing (paths relative to the AzerothCore source root)
 - **Loot flow:** `Loot::FillLoot` (`src/server/game/Loot/LootMgr.cpp`) runs `LootTemplate::Process`, then the
   `OnAfterLootTemplateProcess` hook, and only then assigns group loot rights.
   `Loot::clear()` does not reset `sourceWorldObjectGUID`.
+- **Roll rules:** `LootStoreItem::Roll` applies `Rate.Drop.Item.<quality>` (items) or `.Referenced` (references) to
+  ungrouped rows; `LootGroup::Roll` ignores rates. `LootGroupInvalidSelector` only filters loot mode and duplicates.
+- **`OnItemRoll` hook** gets the row and a modifiable chance, but not which loot table it belongs to, and nested
+  reference rows look the same as top-level ones. Returning false in a group roll cancels the whole group.
 - **Boss flag:** `CREATURE_FLAG_EXTRA_DUNGEON_BOSS` is set at runtime from `instance_encounters` kill-credit rows only
   (`ObjectMgr::LoadInstanceEncounters` in `src/server/game/Globals/ObjectMgr.cpp`). It is not stored in the DB.
 - `Creature::isWorldBoss()` checks the boss type flag (`src/server/game/Entities/Creature/Creature.h`).
@@ -106,7 +177,8 @@ Rejected idea: extra hidden re-rolls of the boss table (very rare items still wo
   and `Spells[1]` (trigger `ITEM_SPELLTRIGGER_LEARN_SPELL_ID`) is the spell taught.
 - **Heroic creatures:** `GetCreatureTemplate()` returns the difficulty template (use its `lootid`). `GetEntry()` is the normal entry.
 - **Config and startup:** `.reload config` calls `OnBeforeConfigLoad` / `OnAfterConfigLoad(reload=true)`
-  (`src/server/game/World/World.cpp`). `OnStartup` runs from worldserver `Main.cpp` after `SetInitialWorldSettings`.
+  (`src/server/game/World/World.cpp`). Rates (`WorldConfig::Initialize`) are loaded before `OnAfterConfigLoad`.
+  `OnStartup` runs from worldserver `Main.cpp` after `SetInitialWorldSettings`.
 - **Module loader:** CMake generates a call to `Add<folder name with - replaced by _>Scripts()` (`modules/CMakeLists.txt`),
   so the module folder must be named `mod-solo-boss-loot` to match `Addmod_solo_boss_lootScripts()` in the loader file.
 - **Module SQL:** the DB updater applies any `data/sql/<dir>` whose name contains the DB name (`world`), recursively
