@@ -1,0 +1,231 @@
+#include "ScriptMgr.h"
+#include "Config.h"
+#include "Creature.h"
+#include "GlobalScript.h"
+#include "Group.h"
+#include "LootMgr.h"
+#include "Map.h"
+#include "MiscScript.h"
+#include "ObjectAccessor.h"
+#include "ObjectMgr.h"
+#include "Player.h"
+#include "WorldScript.h"
+
+#include <algorithm>
+#include <random>
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+struct DynamicLootRatesConfig
+{
+    bool     enabled                   = true;
+    bool     dungeonBossGuaranteedLoot = false;
+
+    uint32   dungeonLootGroupRate      = 1;
+    uint32   dungeonLootReferenceRate  = 1;
+    uint32   raidLootGroupRate         = 1;
+    uint32   raidLootReferenceRate     = 1;
+};
+
+static DynamicLootRatesConfig config;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+static bool IsInDungeon(Map const* map)
+{
+    return map && map->IsDungeon() && !map->IsRaid();
+}
+
+static bool IsInRaid(Map const* map)
+{
+    return map && map->IsRaid();
+}
+
+static bool IsDungeonBossLoot(Player const* player, Loot& loot)
+{
+    if (!player || !player->GetMap() || !player->GetMap()->IsDungeon())
+        return false;
+
+    ObjectGuid sourceGuid = loot.sourceWorldObjectGUID;
+    if (!sourceGuid || !sourceGuid.IsCreature())
+        return false;
+
+    Creature* creature = player->GetMap()->GetCreature(sourceGuid);
+    return creature && creature->IsDungeonBoss();
+}
+
+// ---------------------------------------------------------------------------
+// WorldScript — config loading
+// ---------------------------------------------------------------------------
+class DynamicLootRates_WorldScript : public WorldScript
+{
+public:
+    DynamicLootRates_WorldScript()
+        : WorldScript("DynamicLootRates_WorldScript",
+                       { WORLDHOOK_ON_BEFORE_CONFIG_LOAD }) {}
+
+    void OnBeforeConfigLoad(bool /*reload*/) override
+    {
+        config.enabled                   = sConfigMgr->GetOption<bool>("DynamicLootRates.Enable", true);
+        config.dungeonBossGuaranteedLoot = sConfigMgr->GetOption<bool>("DynamicLootRates.DungeonBoss.GuaranteedLoot", false);
+
+        config.dungeonLootGroupRate      = sConfigMgr->GetOption<uint32>("DynamicLootRates.Dungeon.Rate.GroupAmount", 1);
+        config.dungeonLootReferenceRate  = sConfigMgr->GetOption<uint32>("DynamicLootRates.Dungeon.Rate.ReferencedAmount", 1);
+        config.raidLootGroupRate         = sConfigMgr->GetOption<uint32>("DynamicLootRates.Raid.Rate.GroupAmount", 1);
+        config.raidLootReferenceRate     = sConfigMgr->GetOption<uint32>("DynamicLootRates.Raid.Rate.ReferencedAmount", 1);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// GlobalScript — manipulate loot generation (rolls, group amounts, refs)
+// ---------------------------------------------------------------------------
+class DynamicLootRates_GlobalScript : public GlobalScript
+{
+public:
+    DynamicLootRates_GlobalScript()
+        : GlobalScript("DynamicLootRates_GlobalScript",
+          {
+              GLOBALHOOK_ON_ITEM_ROLL,
+              GLOBALHOOK_ON_AFTER_CALCULATE_LOOT_GROUP_AMOUNT,
+              GLOBALHOOK_ON_AFTER_REF_COUNT
+          }) {}
+
+    // -- Force every item to drop for dungeon bosses + raise item cap ------
+    bool OnItemRoll(Player const* player, LootStoreItem const* /*lootStoreItem*/,
+                    float& chance, Loot& loot, LootStore const& /*store*/) override
+    {
+        if (!config.enabled || !config.dungeonBossGuaranteedLoot)
+            return true;
+
+        if (!IsDungeonBossLoot(player, loot))
+            return true;
+
+        // Raise the item limit so ALL groups can contribute items
+        loot.maxItemsOverride = 255;
+
+        // Force this item to drop
+        chance = 100.0f;
+
+        return true;
+    }
+
+    // -- Roll each group many times so all items are produced ---------------
+    void OnAfterCalculateLootGroupAmount(Player const* player, Loot& loot,
+                                         uint16 /*lootMode*/, uint32& groupAmount,
+                                         LootStore const& /*store*/) override
+    {
+        if (!config.enabled)
+            return;
+
+        // Guaranteed boss loot takes priority
+        if (config.dungeonBossGuaranteedLoot && IsDungeonBossLoot(player, loot))
+        {
+            groupAmount = 20;
+            return;
+        }
+
+        // Normal rate multipliers
+        Map const* map = player->GetMap();
+        if (IsInDungeon(map))
+        {
+            groupAmount = config.dungeonLootGroupRate;
+        }
+        else if (IsInRaid(map))
+        {
+            groupAmount = config.raidLootGroupRate;
+        }
+    }
+
+    // -- Process referenced loot tables more times -------------------------
+    void OnAfterRefCount(Player const* player, LootStoreItem* /*LootStoreItem*/,
+                         Loot& loot, bool /*canRate*/, uint16 /*lootMode*/,
+                         uint32& maxcount, LootStore const& /*store*/) override
+    {
+        if (!config.enabled)
+            return;
+
+        if (config.dungeonBossGuaranteedLoot && IsDungeonBossLoot(player, loot))
+        {
+            maxcount = std::max(maxcount, (uint32)20);
+            return;
+        }
+
+        Map const* map = player->GetMap();
+        if (IsInDungeon(map))
+        {
+            maxcount = config.dungeonLootReferenceRate;
+        }
+        else if (IsInRaid(map))
+        {
+            maxcount = config.raidLootReferenceRate;
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// MiscScript — post-process: shuffle & trim back to 18 items
+// ---------------------------------------------------------------------------
+class DynamicLootRates_MiscScript : public MiscScript
+{
+public:
+    DynamicLootRates_MiscScript()
+        : MiscScript("DynamicLootRates_MiscScript",
+                      { MISCHOOK_ON_AFTER_LOOT_TEMPLATE_PROCESS }) {}
+
+    void OnAfterLootTemplateProcess(Loot* loot, LootTemplate const* /*tab*/,
+                                    LootStore const& /*store*/, Player* /*lootOwner*/,
+                                    bool /*personal*/, bool /*noEmptyError*/,
+                                    uint16 /*lootMode*/) override
+    {
+        if (!config.enabled || !config.dungeonBossGuaranteedLoot)
+            return;
+
+        if (!loot || loot->items.size() <= MAX_NR_LOOT_ITEMS)
+            return;
+
+        LOG_DEBUG("module", "mod_dynamic_loot_rates: Post-process — {} items generated, trimming to {}",
+                  loot->items.size(), MAX_NR_LOOT_ITEMS);
+
+        // Shuffle so every group has a fair chance of being represented
+        std::shuffle(loot->items.begin(), loot->items.end(),
+                     std::mt19937{std::random_device{}()});
+
+        // Trim to the hard client limit
+        loot->items.resize(MAX_NR_LOOT_ITEMS);
+
+        // Rebuild itemIndex (must match vector position) and unlootedCount
+        loot->unlootedCount = 0;
+        for (uint32 i = 0; i < loot->items.size(); ++i)
+        {
+            loot->items[i].itemIndex = i;
+
+            if (!loot->items[i].is_looted &&
+                !loot->items[i].freeforall &&
+                 loot->items[i].conditions.empty())
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(loot->items[i].itemid);
+                if (proto && !proto->HasFlag(ITEM_FLAG_MULTI_DROP))
+                {
+                    ++loot->unlootedCount;
+                }
+            }
+        }
+
+        // Reset the override now that we've trimmed
+        loot->maxItemsOverride = MAX_NR_LOOT_ITEMS;
+
+        LOG_DEBUG("module", "mod_dynamic_loot_rates: Final unlootedCount = {}", loot->unlootedCount);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+void AddDynamicLootRateScripts()
+{
+    new DynamicLootRates_WorldScript();
+    new DynamicLootRates_GlobalScript();
+    new DynamicLootRates_MiscScript();
+}

@@ -3,31 +3,97 @@
 ########################################
 # DynamicLootRates configuration
 ########################################
+
 #
 #    DynamicLootRates.Enable
-#        Description: Enables or disables the module
-#        Default:     0 - Disabled
-#                     1 - Enabled
+#        Description: Enables or disables the module entirely.
+#        Default:     1 - Enabled
+#                     0 - Disabled
 #
-
 DynamicLootRates.Enable = 1
 
+#
+#    DynamicLootRates.Boss.GuaranteedLoot
+#        Description: When enabled, instance bosses (any creature flagged as
+#                     IsDungeonBoss, which includes both dungeon and raid bosses)
+#                     will drop ALL of their boss-specific loot items.
+#
+#                     "Boss-specific" is determined automatically at server startup
+#                     by analyzing loot tables. Items or references that appear in
+#                     only a few creatures' loot tables (controlled by SharedThreshold)
+#                     are considered boss-specific and will be forced to drop.
+#                     Items that appear in many creatures' loot tables (e.g. Linen
+#                     Cloth, Ice Cold Milk, world-drop greens) are left at their
+#                     normal drop chances. Quest-required items are never forced.
+#
+#                     If more items are generated than the 18-item client limit,
+#                     they are randomly shuffled and trimmed so every loot group
+#                     gets fair representation.
+#
+#        Default:     0 - Disabled (normal random loot)
+#                     1 - Enabled (guaranteed boss-specific loot)
+#
+DynamicLootRates.Boss.GuaranteedLoot = 0
+
+#
+#    DynamicLootRates.SharedThreshold
+#        Description: Controls how the module distinguishes boss-specific items
+#                     from generic/shared items (like world drops).
+#
+#                     At server startup, the module counts how many distinct
+#                     creature loot entries contain each item or reference.
+#                     If an item/reference appears in MORE than this many entries,
+#                     it is considered "shared" and will NOT be forced to 100%.
+#
+#                     Examples with default threshold of 3:
+#                       - Cursed Felblade (appears in 1 creature) -> boss-specific, forced
+#                       - Linen Cloth (appears in 500+ creatures) -> shared, normal chance
+#                       - Reference 30484 (used by 1 creature)    -> boss-specific, forced
+#                       - Reference 24060 (used by 50+ creatures) -> shared, normal chance
+#
+#                     Lower values = more aggressive (fewer items forced).
+#                     Higher values = more permissive (more items forced).
+#
+#        Default:     3
+#
+DynamicLootRates.SharedThreshold = 3
+
+#
 #    DynamicLootRates.Dungeon.Rate.GroupAmount
-#        Description: Multiplier for referenced loot amount inside of dungeons
-#        Default:     1
+#        Description: Multiplier for how many times each loot group rolls
+#                     inside dungeons (non-raid instances).
+#                     Only applies when Boss.GuaranteedLoot is disabled, or
+#                     to non-boss creatures when it is enabled.
+#        Default:     1 (normal - each group rolls once)
+#
 DynamicLootRates.Dungeon.Rate.GroupAmount = 1
 
-#    DynamicLootRates.Dungeon.Rate.GroupAmount
-#        Description: Multiplier for grouped items inside of dungeons
-#        Default:     1
+#
+#    DynamicLootRates.Dungeon.Rate.ReferencedAmount
+#        Description: Multiplier for how many times referenced loot templates
+#                     are processed inside dungeons (non-raid instances).
+#                     Only applies when Boss.GuaranteedLoot is disabled, or
+#                     to non-boss creatures when it is enabled.
+#        Default:     1 (normal)
+#
 DynamicLootRates.Dungeon.Rate.ReferencedAmount = 1
 
-#    DynamicLootRates.Dungeon.Rate.GroupAmount
-#        Description: Multiplier for referenced loot amount inside of raids
-#        Default:     1
+#
+#    DynamicLootRates.Raid.Rate.GroupAmount
+#        Description: Multiplier for how many times each loot group rolls
+#                     inside raids.
+#                     Only applies when Boss.GuaranteedLoot is disabled, or
+#                     to non-boss creatures when it is enabled.
+#        Default:     1 (normal - each group rolls once)
+#
 DynamicLootRates.Raid.Rate.GroupAmount = 1
 
-#    DynamicLootRates.Dungeon.Rate.GroupAmount
-#        Description: Multiplier for grouped items inside of raids
-#        Default:     1
+#
+#    DynamicLootRates.Raid.Rate.ReferencedAmount
+#        Description: Multiplier for how many times referenced loot templates
+#                     are processed inside raids.
+#                     Only applies when Boss.GuaranteedLoot is disabled, or
+#                     to non-boss creatures when it is enabled.
+#        Default:     1 (normal)
+#
 DynamicLootRates.Raid.Rate.ReferencedAmount = 1
