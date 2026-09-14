@@ -1,617 +1,778 @@
-#include "ScriptMgr.h"
+/*
+ * mod-dynamic-loot-rates
+ *
+ * When a dungeon or raid boss (or a boss chest) is looted, adds the boss's own loot that a real player in the
+ * group can use and doesn't have yet. Bots are ignored. The normal loot roll is untouched; this only adds items.
+ *
+ * At startup (and on .reload config) the module works out which items belong to each boss loot table:
+ *   - only boss loot tables drop the item (no trash mob, world-drop list, container, ...)
+ *   - items shared by many bosses are only kept if they can be kept (gear, bags, mounts, pets, recipes)
+ *   - quest-required items are left to the normal roll, and hard-mode (LootMode) rules are kept
+ * The `dynamic_loot_rates_overrides` world table adds boss chests and extra bosses, and forces items in or out.
+ */
+
 #include "Config.h"
+#include "Containers.h"
 #include "Creature.h"
 #include "DatabaseEnv.h"
-#include "GlobalScript.h"
+#include "GameObject.h"
 #include "Group.h"
-#include "Item.h"
-#include "ItemEnchantmentMgr.h"
 #include "LootMgr.h"
 #include "Map.h"
 #include "MiscScript.h"
-#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "ScriptMgr.h"
+#include "Timer.h"
 #include "WorldScript.h"
+#include "WorldSession.h"
 
 #include <algorithm>
-#include <random>
+#include <cstdlib>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
-#define DLR_LOG_TYPE "dlr"
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-struct DynamicLootRatesConfig
+namespace
 {
-    bool     enabled                   = true;
-    bool     bossGuaranteedLoot        = false;
+    constexpr char const* LOG_NAME = "module.dlr";
+    constexpr char const* OVERRIDES_TABLE = "dynamic_loot_rates_overrides";
 
-    uint32   dungeonLootGroupRate      = 1;
-    uint32   dungeonLootReferenceRate  = 1;
-    uint32   raidLootGroupRate         = 1;
-    uint32   raidLootReferenceRate     = 1;
-
-    uint32   sharedThreshold           = 3;
-};
-
-static DynamicLootRatesConfig config;
-
-// ---------------------------------------------------------------------------
-// Shared-item/reference detection caches (built at startup)
-// ---------------------------------------------------------------------------
-static std::unordered_map<uint32, uint32> s_refUsageCount;
-static std::unordered_map<uint32, uint32> s_itemUsageCount;
-
-static void BuildUsageCaches()
-{
-    s_refUsageCount.clear();
-    s_itemUsageCount.clear();
-
-    const char* allTables[] = {
-        "creature_loot_template",
-        "gameobject_loot_template",
-        "fishing_loot_template",
-        "item_loot_template",
-        "pickpocketing_loot_template",
-        "skinning_loot_template",
-        "mail_loot_template",
-        "spell_loot_template",
-        "milling_loot_template",
-        "prospecting_loot_template",
-        "disenchant_loot_template",
-        "reference_loot_template",
-        "player_loot_template",
-        nullptr
+    // ---------------------------------------------------------------------------
+    // Configuration
+    // ---------------------------------------------------------------------------
+    struct ModuleConfig
+    {
+        bool enabled = true;
+        bool skipOwnedItems = true;
+        uint32 sharedPoolThreshold = 3;
     };
 
-    std::unordered_map<uint32, std::unordered_set<uint64>> refSources;
+    ModuleConfig config;
 
-    for (int t = 0; allTables[t] != nullptr; ++t)
+    void LoadConfig()
     {
+        config.enabled             = sConfigMgr->GetOption<bool>("DynamicLootRates.Enable", true);
+        config.skipOwnedItems      = sConfigMgr->GetOption<bool>("DynamicLootRates.SkipOwnedItems", true);
+        config.sharedPoolThreshold = sConfigMgr->GetOption<uint32>("DynamicLootRates.SharedPoolThreshold", 3);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Boss loot cache
+    // ---------------------------------------------------------------------------
+    enum OverrideSourceType : uint8
+    {
+        OVERRIDE_CREATURE   = 0,
+        OVERRIDE_GAMEOBJECT = 1,
+        OVERRIDE_ITEM       = 2
+    };
+
+    // LootMode masks that must all share a bit with the kill's loot mode (one per table/reference on the way to the item)
+    using ModePath = std::vector<uint16>;
+
+    struct BossItem
+    {
+        uint32 itemId;
+        uint8 minCount;
+        uint8 maxCount;
+        std::vector<ModePath> modePaths; // the item can drop if any path matches
+    };
+
+    using BossItemList = std::vector<BossItem>;
+
+    struct BossLootCache
+    {
+        std::unordered_map<uint32, BossItemList> creatureLoot; // creature loot id -> items to add
+        std::unordered_map<uint32, BossItemList> chestLoot;    // gameobject loot id -> items to add
+        std::unordered_map<uint32, bool> creatureOverrides;    // creature entry -> is a boss
+        std::unordered_set<uint32> bossChests;                 // gameobject entries
+    };
+
+    // Loot is generated on map threads, the cache is rebuilt on the world thread: swap it under a lock
+    std::shared_ptr<BossLootCache const> bossLootCache;
+    std::shared_mutex bossLootCacheLock;
+
+    std::shared_ptr<BossLootCache const> GetBossLootCache()
+    {
+        std::shared_lock lock(bossLootCacheLock);
+        return bossLootCache;
+    }
+
+    void SetBossLootCache(std::shared_ptr<BossLootCache const> cache)
+    {
+        std::unique_lock lock(bossLootCacheLock);
+        bossLootCache = std::move(cache);
+    }
+
+    struct LootRow
+    {
+        uint32 item;
+        uint32 reference;
+        uint16 lootMode;
+        uint8 minCount;
+        uint8 maxCount;
+        bool questRequired;
+    };
+
+    using LootRows = std::unordered_map<uint32, std::vector<LootRow>>; // loot entry -> rows
+
+    LootRows LoadLootRows(char const* table)
+    {
+        LootRows rows;
+
         QueryResult result = WorldDatabase.Query(
-            "SELECT Entry, Reference FROM {} WHERE Reference != 0", allTables[t]);
-
+            "SELECT `Entry`, `Item`, `Reference`, `QuestRequired`, `LootMode`, `MinCount`, `MaxCount` FROM `{}`", table);
         if (!result)
-            continue;
+            return rows;
 
-        uint32 rowCount = 0;
         do
         {
             Field* fields = result->Fetch();
-            uint32 entry     = fields[0].Get<uint32>();
-            int32  reference = fields[1].Get<int32>();
-            uint32 absRef    = static_cast<uint32>(std::abs(reference));
 
-            uint64 sourceKey = (static_cast<uint64>(t) << 32) | entry;
-            refSources[absRef].insert(sourceKey);
-            ++rowCount;
+            LootRow row;
+            row.item          = fields[1].Get<uint32>();
+            row.reference     = static_cast<uint32>(std::abs(fields[2].Get<int32>()));
+            row.questRequired = fields[3].Get<bool>();
+            row.lootMode      = fields[4].Get<uint16>();
+            row.minCount      = fields[5].Get<uint8>();
+            row.maxCount      = fields[6].Get<uint8>();
+
+            rows[fields[0].Get<uint32>()].push_back(row);
         } while (result->NextRow());
 
-        LOG_DEBUG(DLR_LOG_TYPE, "DLR: Scanned {} — {} reference rows", allTables[t], rowCount);
+        return rows;
     }
 
-    for (auto const& [refId, sources] : refSources)
-        s_refUsageCount[refId] = static_cast<uint32>(sources.size());
-
+    // Marks a reference, everything below it and all its items as dropped by something that isn't a boss
+    void MarkReferenceNonBoss(uint32 reference, LootRows const& referenceRows,
+        std::unordered_set<uint32>& nonBossReferences, std::unordered_set<uint32>& nonBossItems)
     {
-        QueryResult result = WorldDatabase.Query(
-            "SELECT Item, COUNT(DISTINCT Entry) FROM creature_loot_template "
-            "WHERE Reference = 0 GROUP BY Item");
+        std::vector<uint32> pending{ reference };
+        while (!pending.empty())
+        {
+            uint32 const current = pending.back();
+            pending.pop_back();
 
-        if (result)
+            if (!nonBossReferences.insert(current).second)
+                continue;
+
+            auto itr = referenceRows.find(current);
+            if (itr == referenceRows.end())
+                continue;
+
+            for (LootRow const& row : itr->second)
+            {
+                if (row.reference)
+                    pending.push_back(row.reference);
+                else
+                    nonBossItems.insert(row.item);
+            }
+        }
+    }
+
+    // Adds a mask to a path, dropping masks that became redundant
+    ModePath WithMask(ModePath path, uint16 mask)
+    {
+        for (uint16 existing : path)
+            if ((existing & ~mask) == 0) // whenever `existing` matches, `mask` matches too
+                return path;
+
+        path.erase(std::remove_if(path.begin(), path.end(),
+            [mask](uint16 existing) { return (mask & ~existing) == 0; }), path.end());
+        path.push_back(mask);
+        return path;
+    }
+
+    // Every item a loot table can drop, following references. Quest-required items are left to the normal roll.
+    std::unordered_map<uint32, BossItem> CollectLootTableItems(std::vector<LootRow> const& rows, LootRows const& referenceRows)
+    {
+        constexpr uint8 MaxReferenceDepth = 8;
+
+        struct Pending
+        {
+            LootRow const* row;
+            ModePath path;
+            uint8 depth;
+        };
+
+        std::unordered_map<uint32, BossItem> items;
+        std::vector<Pending> pending;
+        for (LootRow const& row : rows)
+            pending.push_back({ &row, {}, 0 });
+
+        while (!pending.empty())
+        {
+            Pending current = std::move(pending.back());
+            pending.pop_back();
+
+            LootRow const& row = *current.row;
+            if (!row.lootMode)
+                continue;
+
+            ModePath path = WithMask(std::move(current.path), row.lootMode);
+
+            if (row.reference)
+            {
+                if (current.depth >= MaxReferenceDepth)
+                    continue;
+
+                if (auto itr = referenceRows.find(row.reference); itr != referenceRows.end())
+                    for (LootRow const& child : itr->second)
+                        pending.push_back({ &child, path, uint8(current.depth + 1) });
+
+                continue;
+            }
+
+            if (row.questRequired)
+                continue;
+
+            BossItem& item = items.try_emplace(row.item, BossItem{ row.item, row.minCount, row.maxCount, {} }).first->second;
+            std::vector<ModePath>& paths = item.modePaths;
+            if (std::find(paths.begin(), paths.end(), path) == paths.end())
+                paths.push_back(std::move(path));
+        }
+
+        return items;
+    }
+
+    bool IsGear(ItemTemplate const* proto)
+    {
+        return proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR;
+    }
+
+    // Items that stay in the player's bags once looted, so "skip owned" and "already learned" stop them repeating
+    bool IsKeepable(ItemTemplate const* proto)
+    {
+        switch (proto->Class)
+        {
+            case ITEM_CLASS_WEAPON:
+            case ITEM_CLASS_ARMOR:
+            case ITEM_CLASS_CONTAINER:
+            case ITEM_CLASS_QUIVER:
+            case ITEM_CLASS_RECIPE:
+                return true;
+            case ITEM_CLASS_MISC:
+                return proto->SubClass == ITEM_SUBCLASS_JUNK_MOUNT || proto->SubClass == ITEM_SUBCLASS_JUNK_PET;
+            default:
+                return false;
+        }
+    }
+
+    std::shared_ptr<BossLootCache const> BuildBossLootCache()
+    {
+        uint32 const startTime = getMSTime();
+        auto cache = std::make_shared<BossLootCache>();
+
+        // Overrides
+        std::unordered_set<uint32> forcedItems;
+        std::unordered_set<uint32> excludedItems;
+        uint32 overrideCount = 0;
+
+        if (QueryResult result = WorldDatabase.Query("SELECT `SourceType`, `Entry`, `Mode` FROM `{}`", OVERRIDES_TABLE))
         {
             do
             {
                 Field* fields = result->Fetch();
-                s_itemUsageCount[fields[0].Get<uint32>()] = fields[1].Get<uint32>();
+                uint8 const sourceType = fields[0].Get<uint8>();
+                uint32 const entry     = fields[1].Get<uint32>();
+                bool const include     = fields[2].Get<uint8>() != 0;
+
+                switch (sourceType)
+                {
+                    case OVERRIDE_CREATURE:
+                        cache->creatureOverrides[entry] = include;
+                        break;
+                    case OVERRIDE_GAMEOBJECT:
+                        if (include)
+                            cache->bossChests.insert(entry);
+                        break;
+                    case OVERRIDE_ITEM:
+                        (include ? forcedItems : excludedItems).insert(entry);
+                        break;
+                    default:
+                        LOG_ERROR(LOG_NAME, "DLR: `{}` has unknown SourceType {} (Entry {}), skipped", OVERRIDES_TABLE, sourceType, entry);
+                        break;
+                }
+
+                ++overrideCount;
             } while (result->NextRow());
         }
-    }
 
-    uint32 sharedRefCount = 0, bossRefCount = 0;
-    for (auto const& [refId, count] : s_refUsageCount)
-    {
-        if (count > config.sharedThreshold) ++sharedRefCount;
-        else ++bossRefCount;
-    }
+        if (!overrideCount)
+            LOG_WARN(LOG_NAME, "DLR: `{}` is empty or missing, so boss chests get no extra loot. "
+                "Has the module's SQL been applied to the world database?", OVERRIDES_TABLE);
 
-    uint32 sharedItemCount = 0, bossItemCount = 0;
-    for (auto const& [itemId, count] : s_itemUsageCount)
-    {
-        if (count > config.sharedThreshold) ++sharedItemCount;
-        else ++bossItemCount;
-    }
-
-    LOG_INFO(DLR_LOG_TYPE, "DLR: Usage caches built — references: {} total ({} shared, {} boss-specific), "
-             "direct items: {} total ({} shared, {} boss-specific), threshold: {}",
-             s_refUsageCount.size(), sharedRefCount, bossRefCount,
-             s_itemUsageCount.size(), sharedItemCount, bossItemCount,
-             config.sharedThreshold);
-}
-
-static bool IsSharedReference(uint32 referenceId)
-{
-    auto it = s_refUsageCount.find(referenceId);
-    return (it != s_refUsageCount.end()) && (it->second > config.sharedThreshold);
-}
-
-static bool IsSharedItem(uint32 itemId)
-{
-    auto it = s_itemUsageCount.find(itemId);
-    return (it != s_itemUsageCount.end()) && (it->second > config.sharedThreshold);
-}
-
-// ---------------------------------------------------------------------------
-// Boss loot cache
-// ---------------------------------------------------------------------------
-struct BossLootEntry
-{
-    uint32 itemid;
-    uint8  mincount;
-    uint8  maxcount;
-};
-
-static std::unordered_map<uint32, std::vector<BossLootEntry>> s_bossLootCache;
-
-static void ResolveReferenceItems(uint32 refEntry,
-                                  std::vector<BossLootEntry>& outItems,
-                                  std::unordered_set<uint32>& visitedRefs)
-{
-    if (!visitedRefs.insert(refEntry).second)
-        return;
-
-    QueryResult result = WorldDatabase.Query(
-        "SELECT Item, Reference, MinCount, MaxCount, QuestRequired "
-        "FROM reference_loot_template WHERE Entry = {}", refEntry);
-
-    if (!result)
-        return;
-
-    do
-    {
-        Field* fields = result->Fetch();
-        uint32 item      = fields[0].Get<uint32>();
-        int32  reference = fields[1].Get<int32>();
-        uint8  mincount  = fields[2].Get<uint8>();
-        uint8  maxcount  = fields[3].Get<uint8>();
-        bool   questReq  = fields[4].Get<bool>();
-
-        if (questReq)
-            continue;
-
-        if (reference != 0)
+        // Boss creature loot ids: encounter bosses and boss-flagged creatures, plus their difficulty versions
+        std::unordered_set<uint32> bossCreatureLootIds;
+        for (auto const& [entry, creatureTemplate] : *sObjectMgr->GetCreatureTemplates())
         {
-            uint32 absRef = static_cast<uint32>(std::abs(reference));
-            if (!IsSharedReference(absRef))
-                ResolveReferenceItems(absRef, outItems, visitedRefs);
+            bool isBoss = creatureTemplate.HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS)
+                || (creatureTemplate.type_flags & CREATURE_TYPE_FLAG_BOSS_MOB);
+
+            if (auto itr = cache->creatureOverrides.find(entry); itr != cache->creatureOverrides.end())
+                isBoss = itr->second;
+
+            if (!isBoss)
+                continue;
+
+            if (creatureTemplate.lootid)
+                bossCreatureLootIds.insert(creatureTemplate.lootid);
+
+            for (uint32 difficultyEntry : creatureTemplate.DifficultyEntry)
+                if (difficultyEntry)
+                    if (CreatureTemplate const* difficultyTemplate = sObjectMgr->GetCreatureTemplate(difficultyEntry))
+                        if (difficultyTemplate->lootid)
+                            bossCreatureLootIds.insert(difficultyTemplate->lootid);
+        }
+
+        std::unordered_set<uint32> bossChestLootIds;
+        for (uint32 chestEntry : cache->bossChests)
+            if (GameObjectTemplate const* chestTemplate = sObjectMgr->GetGameObjectTemplate(chestEntry))
+                if (uint32 const lootId = chestTemplate->GetLootId())
+                    bossChestLootIds.insert(lootId);
+
+        // Anything reachable from a non-boss loot table is not boss loot
+        LootRows const referenceRows = LoadLootRows("reference_loot_template");
+        std::unordered_set<uint32> nonBossReferences;
+        std::unordered_set<uint32> nonBossItems;
+
+        auto markNonBoss = [&](std::vector<LootRow> const& rows)
+        {
+            for (LootRow const& row : rows)
+            {
+                if (row.reference)
+                    MarkReferenceNonBoss(row.reference, referenceRows, nonBossReferences, nonBossItems);
+                else
+                    nonBossItems.insert(row.item);
+            }
+        };
+
+        struct BossTable
+        {
+            bool isChest;
+            uint32 lootId;
+            std::vector<LootRow> const* rows;
+        };
+
+        std::vector<BossTable> bossTables;
+
+        LootRows const creatureRows = LoadLootRows("creature_loot_template");
+        for (auto const& [lootId, rows] : creatureRows)
+        {
+            if (bossCreatureLootIds.count(lootId))
+                bossTables.push_back({ false, lootId, &rows });
+            else
+                markNonBoss(rows);
+        }
+
+        LootRows const gameobjectRows = LoadLootRows("gameobject_loot_template");
+        for (auto const& [lootId, rows] : gameobjectRows)
+        {
+            if (bossChestLootIds.count(lootId))
+                bossTables.push_back({ true, lootId, &rows });
+            else
+                markNonBoss(rows);
+        }
+
+        for (char const* table : { "fishing_loot_template", "item_loot_template", "pickpocketing_loot_template",
+            "skinning_loot_template", "mail_loot_template", "spell_loot_template", "milling_loot_template",
+            "prospecting_loot_template", "disenchant_loot_template", "player_loot_template" })
+        {
+            for (auto const& [entry, rows] : LoadLootRows(table))
+                markNonBoss(rows);
+        }
+
+        // Items per boss table, and how many boss tables drop each item
+        std::vector<std::unordered_map<uint32, BossItem>> tableItems;
+        tableItems.reserve(bossTables.size());
+        std::unordered_map<uint32, uint32> bossTableCount;
+
+        for (BossTable const& table : bossTables)
+        {
+            tableItems.push_back(CollectLootTableItems(*table.rows, referenceRows));
+            for (auto const& [itemId, item] : tableItems.back())
+                ++bossTableCount[itemId];
+        }
+
+        uint32 itemCount = 0;
+        for (size_t i = 0; i < bossTables.size(); ++i)
+        {
+            BossItemList items;
+
+            for (auto& [itemId, item] : tableItems[i])
+            {
+                if (excludedItems.count(itemId))
+                    continue;
+
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+                if (!proto)
+                    continue;
+
+                if (!forcedItems.count(itemId))
+                {
+                    if (nonBossItems.count(itemId))
+                        continue; // also drops from trash, world-drop lists, containers, ...
+
+                    if (proto->Quality == ITEM_QUALITY_POOR || (IsGear(proto) && proto->Quality < ITEM_QUALITY_UNCOMMON))
+                        continue;
+
+                    if (bossTableCount[itemId] > config.sharedPoolThreshold && !IsKeepable(proto))
+                        continue; // shared by many bosses and gets used up: would repeat at every boss
+                }
+
+                items.push_back(std::move(item));
+            }
+
+            if (items.empty())
+                continue;
+
+            itemCount += items.size();
+            auto& target = bossTables[i].isChest ? cache->chestLoot : cache->creatureLoot;
+            target[bossTables[i].lootId] = std::move(items);
+        }
+
+        LOG_INFO(LOG_NAME, "DLR: Boss loot cache built: {} creature and {} chest loot tables, {} items, {} overrides in {} ms",
+            cache->creatureLoot.size(), cache->chestLoot.size(), itemCount, overrideCount, GetMSTimeDiffToNow(startTime));
+
+        return cache;
+    }
+
+    void RebuildBossLootCache()
+    {
+        if (!config.enabled)
+        {
+            SetBossLootCache(nullptr);
+            LOG_INFO(LOG_NAME, "DLR: Module disabled");
+            return;
+        }
+
+        SetBossLootCache(BuildBossLootCache());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Filling the loot window
+    // ---------------------------------------------------------------------------
+    bool DropsInLootMode(BossItem const& item, uint16 lootMode)
+    {
+        return std::any_of(item.modePaths.begin(), item.modePaths.end(), [lootMode](ModePath const& path)
+        {
+            return std::all_of(path.begin(), path.end(), [lootMode](uint16 mask) { return (mask & lootMode) != 0; });
+        });
+    }
+
+    // Real players in the loot owner's group who are in the same instance. Bots never count.
+    std::vector<Player*> GetRealPlayers(Player* lootOwner)
+    {
+        std::vector<Player*> players;
+
+        auto addIfReal = [&](Player* player)
+        {
+            if (player && player->IsInMap(lootOwner) && player->GetSession() && !player->GetSession()->IsBot())
+                players.push_back(player);
+        };
+
+        if (Group* group = lootOwner->GetGroup())
+        {
+            for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+                addIfReal(itr->GetSource());
         }
         else
-        {
-            if (!IsSharedItem(item) && sObjectMgr->GetItemTemplate(item))
-                outItems.push_back({item, mincount, maxcount});
-        }
-    } while (result->NextRow());
-}
+            addIfReal(lootOwner);
 
-static void BuildBossLootCache()
-{
-    s_bossLootCache.clear();
+        return players;
+    }
 
-    QueryResult result = WorldDatabase.Query(
-        "SELECT Entry, Item, Reference, MinCount, MaxCount, QuestRequired "
-        "FROM creature_loot_template");
-
-    if (!result)
-        return;
-
-    struct RawEntry { uint32 item; int32 reference; uint8 mincount; uint8 maxcount; bool questReq; };
-    std::unordered_map<uint32, std::vector<RawEntry>> rawEntries;
-
-    do
+    // Highest armor type the player has learned: plate for a level 40+ warrior, mail below 40
+    uint32 GetMainArmorSubClass(Player const* player)
     {
-        Field* fields = result->Fetch();
-        uint32 entry     = fields[0].Get<uint32>();
-        uint32 item      = fields[1].Get<uint32>();
-        int32  reference = fields[2].Get<int32>();
-        uint8  mincount  = fields[3].Get<uint8>();
-        uint8  maxcount  = fields[4].Get<uint8>();
-        bool   questReq  = fields[5].Get<bool>();
+        if (player->HasSkill(SKILL_PLATE_MAIL))
+            return ITEM_SUBCLASS_ARMOR_PLATE;
+        if (player->HasSkill(SKILL_MAIL))
+            return ITEM_SUBCLASS_ARMOR_MAIL;
+        if (player->HasSkill(SKILL_LEATHER))
+            return ITEM_SUBCLASS_ARMOR_LEATHER;
+        return ITEM_SUBCLASS_ARMOR_CLOTH;
+    }
 
-        rawEntries[entry].push_back({item, reference, mincount, maxcount, questReq});
-    } while (result->NextRow());
-
-    uint32 totalItems = 0;
-    for (auto const& [entry, rows] : rawEntries)
+    // Weapon types each class can learn to use
+    uint32 GetWeaponSubClassMask(uint8 playerClass)
     {
-        std::vector<BossLootEntry> bossItems;
+        auto const bit = [](uint32 subClass) { return uint32(1) << subClass; };
 
-        for (auto const& row : rows)
+        switch (playerClass)
         {
-            if (row.questReq)
-                continue;
-
-            if (row.reference != 0)
-            {
-                uint32 absRef = static_cast<uint32>(std::abs(row.reference));
-                if (!IsSharedReference(absRef))
-                {
-                    std::unordered_set<uint32> visited;
-                    ResolveReferenceItems(absRef, bossItems, visited);
-                }
-            }
-            else
-            {
-                if (!IsSharedItem(row.item) && sObjectMgr->GetItemTemplate(row.item))
-                    bossItems.push_back({row.item, row.mincount, row.maxcount});
-            }
-        }
-
-        if (!bossItems.empty())
-        {
-            totalItems += bossItems.size();
-            s_bossLootCache[entry] = std::move(bossItems);
+            case CLASS_WARRIOR:
+                return bit(ITEM_SUBCLASS_WEAPON_AXE) | bit(ITEM_SUBCLASS_WEAPON_AXE2) | bit(ITEM_SUBCLASS_WEAPON_MACE)
+                    | bit(ITEM_SUBCLASS_WEAPON_MACE2) | bit(ITEM_SUBCLASS_WEAPON_SWORD) | bit(ITEM_SUBCLASS_WEAPON_SWORD2)
+                    | bit(ITEM_SUBCLASS_WEAPON_POLEARM) | bit(ITEM_SUBCLASS_WEAPON_STAFF) | bit(ITEM_SUBCLASS_WEAPON_FIST)
+                    | bit(ITEM_SUBCLASS_WEAPON_DAGGER) | bit(ITEM_SUBCLASS_WEAPON_BOW) | bit(ITEM_SUBCLASS_WEAPON_GUN)
+                    | bit(ITEM_SUBCLASS_WEAPON_CROSSBOW) | bit(ITEM_SUBCLASS_WEAPON_THROWN);
+            case CLASS_PALADIN:
+            case CLASS_DEATH_KNIGHT:
+                return bit(ITEM_SUBCLASS_WEAPON_AXE) | bit(ITEM_SUBCLASS_WEAPON_AXE2) | bit(ITEM_SUBCLASS_WEAPON_MACE)
+                    | bit(ITEM_SUBCLASS_WEAPON_MACE2) | bit(ITEM_SUBCLASS_WEAPON_SWORD) | bit(ITEM_SUBCLASS_WEAPON_SWORD2)
+                    | bit(ITEM_SUBCLASS_WEAPON_POLEARM);
+            case CLASS_HUNTER:
+                return bit(ITEM_SUBCLASS_WEAPON_AXE) | bit(ITEM_SUBCLASS_WEAPON_AXE2) | bit(ITEM_SUBCLASS_WEAPON_SWORD)
+                    | bit(ITEM_SUBCLASS_WEAPON_SWORD2) | bit(ITEM_SUBCLASS_WEAPON_POLEARM) | bit(ITEM_SUBCLASS_WEAPON_STAFF)
+                    | bit(ITEM_SUBCLASS_WEAPON_FIST) | bit(ITEM_SUBCLASS_WEAPON_DAGGER) | bit(ITEM_SUBCLASS_WEAPON_BOW)
+                    | bit(ITEM_SUBCLASS_WEAPON_GUN) | bit(ITEM_SUBCLASS_WEAPON_CROSSBOW) | bit(ITEM_SUBCLASS_WEAPON_THROWN);
+            case CLASS_ROGUE:
+                return bit(ITEM_SUBCLASS_WEAPON_AXE) | bit(ITEM_SUBCLASS_WEAPON_MACE) | bit(ITEM_SUBCLASS_WEAPON_SWORD)
+                    | bit(ITEM_SUBCLASS_WEAPON_FIST) | bit(ITEM_SUBCLASS_WEAPON_DAGGER) | bit(ITEM_SUBCLASS_WEAPON_BOW)
+                    | bit(ITEM_SUBCLASS_WEAPON_GUN) | bit(ITEM_SUBCLASS_WEAPON_CROSSBOW) | bit(ITEM_SUBCLASS_WEAPON_THROWN);
+            case CLASS_PRIEST:
+                return bit(ITEM_SUBCLASS_WEAPON_MACE) | bit(ITEM_SUBCLASS_WEAPON_STAFF) | bit(ITEM_SUBCLASS_WEAPON_DAGGER)
+                    | bit(ITEM_SUBCLASS_WEAPON_WAND);
+            case CLASS_SHAMAN:
+                return bit(ITEM_SUBCLASS_WEAPON_AXE) | bit(ITEM_SUBCLASS_WEAPON_AXE2) | bit(ITEM_SUBCLASS_WEAPON_MACE)
+                    | bit(ITEM_SUBCLASS_WEAPON_MACE2) | bit(ITEM_SUBCLASS_WEAPON_STAFF) | bit(ITEM_SUBCLASS_WEAPON_FIST)
+                    | bit(ITEM_SUBCLASS_WEAPON_DAGGER);
+            case CLASS_MAGE:
+            case CLASS_WARLOCK:
+                return bit(ITEM_SUBCLASS_WEAPON_SWORD) | bit(ITEM_SUBCLASS_WEAPON_STAFF) | bit(ITEM_SUBCLASS_WEAPON_DAGGER)
+                    | bit(ITEM_SUBCLASS_WEAPON_WAND);
+            case CLASS_DRUID:
+                return bit(ITEM_SUBCLASS_WEAPON_MACE) | bit(ITEM_SUBCLASS_WEAPON_MACE2) | bit(ITEM_SUBCLASS_WEAPON_POLEARM)
+                    | bit(ITEM_SUBCLASS_WEAPON_STAFF) | bit(ITEM_SUBCLASS_WEAPON_FIST) | bit(ITEM_SUBCLASS_WEAPON_DAGGER);
+            default:
+                return 0;
         }
     }
 
-    LOG_INFO(DLR_LOG_TYPE, "DLR: Boss loot cache built — {} creature loot entries, {} total boss-specific items",
-             s_bossLootCache.size(), totalItems);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-static bool IsInDungeon(Map const* map)
-{
-    return map && map->IsDungeon() && !map->IsRaid();
-}
-
-static bool IsInRaid(Map const* map)
-{
-    return map && map->IsRaid();
-}
-
-/// Returns the boss creature if this is a dungeon/raid boss loot, nullptr otherwise.
-static Creature* GetBossCreature(Player const* player, Loot& loot)
-{
-    if (!player || !player->GetMap() || !player->GetMap()->IsDungeon())
-        return nullptr;
-
-    ObjectGuid sourceGuid = loot.sourceWorldObjectGUID;
-    if (!sourceGuid || !sourceGuid.IsCreature())
-        return nullptr;
-
-    Creature* creature = player->GetMap()->GetCreature(sourceGuid);
-    if (!creature || !creature->IsDungeonBoss())
-        return nullptr;
-
-    return creature;
-}
-
-/// Format: "BossName (entry 12345, lootid 12345)"
-static std::string FormatCreatureDebugName(Creature const* creature)
-{
-    if (!creature)
-        return "<unknown>";
-    return fmt::format("{} (entry {}, lootid {})",
-                       creature->GetName(), creature->GetEntry(),
-                       creature->GetCreatureTemplate()->lootid);
-}
-
-// ---------------------------------------------------------------------------
-// WorldScript
-// ---------------------------------------------------------------------------
-class DynamicLootRates_WorldScript : public WorldScript
-{
-public:
-    DynamicLootRates_WorldScript()
-        : WorldScript("DynamicLootRates_WorldScript",
-                       { WORLDHOOK_ON_BEFORE_CONFIG_LOAD, WORLDHOOK_ON_STARTUP }) {}
-
-    void OnBeforeConfigLoad(bool reload) override
+    bool IsGearUsableBy(Player const* player, ItemTemplate const* proto)
     {
-        config.enabled                  = sConfigMgr->GetOption<bool>("DynamicLootRates.Enable", true);
-        config.bossGuaranteedLoot       = sConfigMgr->GetOption<bool>("DynamicLootRates.Boss.GuaranteedLoot", false);
-        config.dungeonLootGroupRate     = sConfigMgr->GetOption<uint32>("DynamicLootRates.Dungeon.Rate.GroupAmount", 1);
-        config.dungeonLootReferenceRate = sConfigMgr->GetOption<uint32>("DynamicLootRates.Dungeon.Rate.ReferencedAmount", 1);
-        config.raidLootGroupRate        = sConfigMgr->GetOption<uint32>("DynamicLootRates.Raid.Rate.GroupAmount", 1);
-        config.raidLootReferenceRate    = sConfigMgr->GetOption<uint32>("DynamicLootRates.Raid.Rate.ReferencedAmount", 1);
-        config.sharedThreshold          = sConfigMgr->GetOption<uint32>("DynamicLootRates.SharedThreshold", 3);
+        uint8 const playerClass = player->getClass();
 
-        LOG_INFO(DLR_LOG_TYPE, "DLR: Config {} — enabled={}, bossGuaranteed={}, sharedThreshold={}, "
-                 "dungeonGroupRate={}, dungeonRefRate={}, raidGroupRate={}, raidRefRate={}",
-                 reload ? "reloaded" : "loaded",
-                 config.enabled, config.bossGuaranteedLoot, config.sharedThreshold,
-                 config.dungeonLootGroupRate, config.dungeonLootReferenceRate,
-                 config.raidLootGroupRate, config.raidLootReferenceRate);
-    }
+        if (proto->Class == ITEM_CLASS_WEAPON)
+            return proto->SubClass < 32 && (GetWeaponSubClassMask(playerClass) & (uint32(1) << proto->SubClass)) != 0;
 
-    void OnStartup() override
-    {
-        if (!config.enabled)
+        if (proto->InventoryType == INVTYPE_CLOAK)
+            return true;
+
+        switch (proto->SubClass)
         {
-            LOG_INFO(DLR_LOG_TYPE, "DLR: Module disabled, skipping cache build");
-            return;
-        }
-
-        BuildUsageCaches();
-
-        if (config.bossGuaranteedLoot)
-            BuildBossLootCache();
-    }
-};
-
-// ---------------------------------------------------------------------------
-// GlobalScript — dungeon/raid rate multipliers ONLY (not boss guaranteed)
-// ---------------------------------------------------------------------------
-class DynamicLootRates_GlobalScript : public GlobalScript
-{
-public:
-    DynamicLootRates_GlobalScript()
-        : GlobalScript("DynamicLootRates_GlobalScript",
-          {
-              GLOBALHOOK_ON_AFTER_CALCULATE_LOOT_GROUP_AMOUNT,
-              GLOBALHOOK_ON_AFTER_REF_COUNT
-          }) {}
-
-    void OnAfterCalculateLootGroupAmount(Player const* player, Loot& loot,
-                                         uint16 /*lootMode*/, uint32& groupAmount,
-                                         LootStore const& store) override
-    {
-        if (!config.enabled)
-            return;
-
-        // Only affect creature loot — not skinning, pickpocketing, fishing, etc.
-        if (&store != &LootTemplates_Creature)
-            return;
-
-        // Boss guaranteed loot is handled entirely by post-process injection
-        if (config.bossGuaranteedLoot && GetBossCreature(player, loot))
-            return;
-
-        Map const* map = player->GetMap();
-        uint32 newAmount = groupAmount;
-
-        if (IsInDungeon(map))
-            newAmount = config.dungeonLootGroupRate;
-        else if (IsInRaid(map))
-            newAmount = config.raidLootGroupRate;
-
-        if (newAmount != groupAmount)
-        {
-            LOG_DEBUG(DLR_LOG_TYPE, "DLR: [{}] Group amount {} -> {} ({})",
-                      player->GetMap()->GetMapName(), groupAmount, newAmount,
-                      IsInDungeon(map) ? "dungeon" : "raid");
-            groupAmount = newAmount;
+            case ITEM_SUBCLASS_ARMOR_MISC: // rings, necks, trinkets, off-hand items
+                return true;
+            case ITEM_SUBCLASS_ARMOR_CLOTH:
+            case ITEM_SUBCLASS_ARMOR_LEATHER:
+            case ITEM_SUBCLASS_ARMOR_MAIL:
+            case ITEM_SUBCLASS_ARMOR_PLATE:
+                return proto->SubClass == GetMainArmorSubClass(player);
+            case ITEM_SUBCLASS_ARMOR_BUCKLER:
+            case ITEM_SUBCLASS_ARMOR_SHIELD:
+                return playerClass == CLASS_WARRIOR || playerClass == CLASS_PALADIN || playerClass == CLASS_SHAMAN;
+            case ITEM_SUBCLASS_ARMOR_LIBRAM:
+                return playerClass == CLASS_PALADIN;
+            case ITEM_SUBCLASS_ARMOR_IDOL:
+                return playerClass == CLASS_DRUID;
+            case ITEM_SUBCLASS_ARMOR_TOTEM:
+                return playerClass == CLASS_SHAMAN;
+            case ITEM_SUBCLASS_ARMOR_SIGIL:
+                return playerClass == CLASS_DEATH_KNIGHT;
+            default:
+                return false;
         }
     }
 
-    void OnAfterRefCount(Player const* player, LootStoreItem* /*lootStoreItem*/,
-                         Loot& loot, bool /*canRate*/, uint16 /*lootMode*/,
-                         uint32& maxcount, LootStore const& store) override
+    // Recipes, mounts and pets teach a spell and disappear, so check the spell instead of the bags
+    bool IsAlreadyLearned(Player const* player, ItemTemplate const* proto)
     {
-        if (!config.enabled)
-            return;
-
-        // Only affect creature loot
-        if (&store != &LootTemplates_Creature)
-            return;
-
-        // Boss guaranteed loot is handled entirely by post-process injection
-        if (config.bossGuaranteedLoot && GetBossCreature(player, loot))
-            return;
-
-        Map const* map = player->GetMap();
-        uint32 newMaxcount = maxcount;
-
-        if (IsInDungeon(map))
-            newMaxcount = std::max(maxcount, config.dungeonLootReferenceRate);
-        else if (IsInRaid(map))
-            newMaxcount = std::max(maxcount, config.raidLootReferenceRate);
-
-        if (newMaxcount != maxcount)
-        {
-            LOG_DEBUG(DLR_LOG_TYPE, "DLR: [{}] Ref maxcount {} -> {} ({})",
-                      player->GetMap()->GetMapName(), maxcount, newMaxcount,
-                      IsInDungeon(map) ? "dungeon" : "raid");
-            maxcount = newMaxcount;
-        }
+        _Spell const& learnSpell = proto->Spells[1];
+        return learnSpell.SpellTrigger == ITEM_SPELLTRIGGER_LEARN_SPELL_ID && learnSpell.SpellId > 0
+            && player->HasSpell(static_cast<uint32>(learnSpell.SpellId));
     }
-};
 
-// ---------------------------------------------------------------------------
-// MiscScript — post-process: inject missing boss-specific items
-// ---------------------------------------------------------------------------
-class DynamicLootRates_MiscScript : public MiscScript
-{
-public:
-    DynamicLootRates_MiscScript()
-        : MiscScript("DynamicLootRates_MiscScript",
-                      { MISCHOOK_ON_AFTER_LOOT_TEMPLATE_PROCESS }) {}
-
-    void OnAfterLootTemplateProcess(Loot* loot, LootTemplate const* tab,
-                                    LootStore const& store, Player* lootOwner,
-                                    bool /*personal*/, bool /*noEmptyError*/,
-                                    uint16 /*lootMode*/) override
+    bool PlayerWantsItem(Player const* player, ItemTemplate const* proto, LootItem const& lootItem, ObjectGuid source)
     {
-        if (!config.enabled || !config.bossGuaranteedLoot)
-            return;
-        if (!loot || !lootOwner)
-            return;
+        if (proto->AllowableClass && !(proto->AllowableClass & player->getClassMask()))
+            return false; // tier tokens, class books, ... for another class
 
-        // Only affect creature loot
-        if (&store != &LootTemplates_Creature)
-            return;
+        if (proto->AllowableRace && !(proto->AllowableRace & player->getRaceMask()))
+            return false;
 
-        Creature* creature = GetBossCreature(lootOwner, *loot);
+        if (IsGear(proto) && !IsGearUsableBy(player, proto))
+            return false;
+
+        if (IsAlreadyLearned(player, proto))
+            return false;
+
+        if (config.skipOwnedItems && player->HasItemCount(lootItem.itemid, 1, true))
+            return false;
+
+        // The same check the loot window uses: conditions, faction, hidden recipes, finished quest starters, ...
+        return lootItem.AllowedForPlayer(player, source);
+    }
+
+    BossItemList const* FindCreatureBossItems(BossLootCache const& cache, Map* map, ObjectGuid source,
+        LootStore const& store, LootTemplate const* tab, std::string& sourceName)
+    {
+        if (!source.IsCreature())
+            return nullptr;
+
+        Creature* creature = map->GetCreature(source);
         if (!creature)
-            return;
+            return nullptr;
 
-        uint32 lootEntry = creature->GetCreatureTemplate()->lootid;
-        std::string bossName = FormatCreatureDebugName(creature);
+        bool isBoss = creature->IsDungeonBoss() || creature->isWorldBoss();
+        if (auto itr = cache.creatureOverrides.find(creature->GetEntry()); itr != cache.creatureOverrides.end())
+            isBoss = itr->second;
 
-        auto cacheIt = s_bossLootCache.find(lootEntry);
-        if (cacheIt == s_bossLootCache.end())
-        {
-            LOG_DEBUG(DLR_LOG_TYPE, "DLR: [{}] No boss-specific items cached, skipping", bossName);
-            return;
-        }
+        if (!isBoss)
+            return nullptr;
 
-        auto const& cachedItems = cacheIt->second;
+        uint32 const lootId = creature->GetCreatureTemplate()->lootid;
+        if (!lootId || store.GetLootFor(lootId) != tab)
+            return nullptr; // loot filled from some other table, e.g. by a script
 
-        // Build set of item IDs already present in both regular and quest loot
-        std::unordered_set<uint32> existingItems;
-        for (auto const& li : loot->items)
-            existingItems.insert(li.itemid);
-        for (auto const& li : loot->quest_items)
-            existingItems.insert(li.itemid);
+        auto itr = cache.creatureLoot.find(lootId);
+        if (itr == cache.creatureLoot.end())
+            return nullptr;
 
-        uint32 alreadyPresent = 0;
-        uint32 injected = 0;
-        uint32 skippedCapacity = 0;
-        uint32 skippedNoTemplate = 0;
-
-        LOG_DEBUG(DLR_LOG_TYPE, "DLR: [{}] Post-process start — {} items generated, {} quest items, "
-                  "{} boss-specific items in cache",
-                  bossName, loot->items.size(), loot->quest_items.size(), cachedItems.size());
-
-        for (auto const& bossItem : cachedItems)
-        {
-            if (existingItems.count(bossItem.itemid))
-            {
-                ++alreadyPresent;
-                continue;
-            }
-
-            if (loot->items.size() >= MAX_NR_LOOT_ITEMS)
-            {
-                ++skippedCapacity;
-                continue;
-            }
-
-            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(bossItem.itemid);
-            if (!proto)
-            {
-                ++skippedNoTemplate;
-                continue;
-            }
-
-            // Build a fully initialized LootItem
-            LootItem li;
-            li.itemid            = bossItem.itemid;
-            li.itemIndex         = loot->items.size();
-            li.count             = urand(bossItem.mincount, bossItem.maxcount);
-            li.randomSuffix      = GenerateEnchSuffixFactor(bossItem.itemid);
-            li.randomPropertyId  = Item::GenerateItemRandomPropertyId(bossItem.itemid);
-            li.freeforall        = proto->HasFlag(ITEM_FLAG_MULTI_DROP);
-            li.follow_loot_rules = proto->HasFlagCu(ITEM_FLAGS_CU_FOLLOW_LOOT_RULES);
-            li.needs_quest       = false;
-            li.is_looted         = false;
-            li.is_blocked        = false;
-            li.is_underthreshold = false;
-            li.is_counted        = false;
-            li.rollWinnerGUID    = ObjectGuid::Empty;
-            li.groupid           = 0;
-
-            // Copy conditions from the loot template if available
-            if (tab)
-                tab->CopyConditions(&li);
-
-            loot->items.push_back(li);
-            existingItems.insert(bossItem.itemid);
-
-            // unlootedCount accounting — match Loot::AddItem() logic
-            bool canSeeItem = false;
-            if (Player* owner = ObjectAccessor::FindPlayer(loot->lootOwnerGUID))
-            {
-                if (Group* group = owner->GetGroup())
-                {
-                    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
-                    {
-                        if (Player* member = itr->GetSource())
-                        {
-                            if (li.AllowedForPlayer(member, loot->sourceWorldObjectGUID))
-                            {
-                                canSeeItem = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                else if (li.AllowedForPlayer(owner, loot->sourceWorldObjectGUID))
-                {
-                    canSeeItem = true;
-                }
-            }
-
-            if (canSeeItem && li.conditions.empty() && !proto->HasFlag(ITEM_FLAG_MULTI_DROP))
-                ++loot->unlootedCount;
-
-            ++injected;
-
-            uint32 injCount = li.count;
-            LOG_DEBUG(DLR_LOG_TYPE, "DLR:   [{}] INJECTED {} ({}) x{}", bossName,
-                      bossItem.itemid, proto->Name1, injCount);
-        }
-
-        LOG_DEBUG(DLR_LOG_TYPE, "DLR: [{}] Post-process done — {} injected, {} already present, "
-                  "{} skipped (cap), {} skipped (no template), {} total items, unlootedCount={}",
-                  bossName, injected, alreadyPresent, skippedCapacity, skippedNoTemplate,
-                  loot->items.size(), loot->unlootedCount);
-
-        // If we somehow exceeded the client limit (shouldn't happen with the
-        // capacity check above, but defensive), shuffle and trim
-        if (loot->items.size() > MAX_NR_LOOT_ITEMS)
-        {
-            LOG_WARN(DLR_LOG_TYPE, "DLR: [{}] Exceeded MAX_NR_LOOT_ITEMS ({} > {}), trimming!",
-                     bossName, loot->items.size(), MAX_NR_LOOT_ITEMS);
-
-            std::shuffle(loot->items.begin(), loot->items.end(),
-                         std::mt19937{std::random_device{}()});
-
-            loot->items.resize(MAX_NR_LOOT_ITEMS);
-
-            // Rebuild itemIndex and unlootedCount
-            loot->unlootedCount = 0;
-            for (uint32 i = 0; i < loot->items.size(); ++i)
-            {
-                loot->items[i].itemIndex = i;
-
-                if (!loot->items[i].is_looted &&
-                    !loot->items[i].freeforall &&
-                     loot->items[i].conditions.empty())
-                {
-                    ItemTemplate const* p = sObjectMgr->GetItemTemplate(loot->items[i].itemid);
-                    if (p && !p->HasFlag(ITEM_FLAG_MULTI_DROP))
-                        ++loot->unlootedCount;
-                }
-            }
-        }
-
-        // Final loot table dump at debug level
-        for (uint32 i = 0; i < loot->items.size(); ++i)
-        {
-            LootItem const& item = loot->items[i];
-            ItemTemplate const* p = sObjectMgr->GetItemTemplate(item.itemid);
-            uint32 dumpCount = item.count;
-            uint32 dumpFfa   = item.freeforall ? 1 : 0;
-            uint32 dumpQuest = item.needs_quest ? 1 : 0;
-            LOG_DEBUG(DLR_LOG_TYPE, "DLR:   [{}] slot={} item={} ({}) x{} ffa={} quest={}",
-                      bossName, i, item.itemid,
-                      p ? p->Name1 : std::string("<unknown>"),
-                      dumpCount, dumpFfa, dumpQuest);
-        }
+        sourceName = fmt::format("{} (creature {})", creature->GetName(), creature->GetEntry());
+        return &itr->second;
     }
-};
 
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
+    BossItemList const* FindChestBossItems(BossLootCache const& cache, Map* map, ObjectGuid source,
+        LootStore const& store, LootTemplate const* tab, std::string& sourceName)
+    {
+        if (!source.IsGameObject())
+            return nullptr;
+
+        GameObject* chest = map->GetGameObject(source);
+        if (!chest || !cache.bossChests.count(chest->GetEntry()))
+            return nullptr;
+
+        uint32 const lootId = chest->GetGOInfo()->GetLootId();
+        if (!lootId || store.GetLootFor(lootId) != tab)
+            return nullptr;
+
+        auto itr = cache.chestLoot.find(lootId);
+        if (itr == cache.chestLoot.end())
+            return nullptr;
+
+        sourceName = fmt::format("{} (gameobject {})", chest->GetName(), chest->GetEntry());
+        return &itr->second;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scripts
+    // ---------------------------------------------------------------------------
+    class DynamicLootRates_WorldScript : public WorldScript
+    {
+    public:
+        DynamicLootRates_WorldScript()
+            : WorldScript("DynamicLootRates_WorldScript", { WORLDHOOK_ON_AFTER_CONFIG_LOAD, WORLDHOOK_ON_STARTUP }) { }
+
+        void OnAfterConfigLoad(bool reload) override
+        {
+            LoadConfig();
+
+            // On the first load the world data isn't loaded yet; OnStartup builds the cache then
+            if (reload)
+                RebuildBossLootCache();
+        }
+
+        void OnStartup() override
+        {
+            RebuildBossLootCache();
+        }
+    };
+
+    class DynamicLootRates_MiscScript : public MiscScript
+    {
+    public:
+        DynamicLootRates_MiscScript()
+            : MiscScript("DynamicLootRates_MiscScript", { MISCHOOK_ON_AFTER_LOOT_TEMPLATE_PROCESS }) { }
+
+        void OnAfterLootTemplateProcess(Loot* loot, LootTemplate const* tab, LootStore const& store, Player* lootOwner,
+            bool /*personal*/, bool /*noEmptyError*/, uint16 lootMode) override
+        {
+            if (!config.enabled || !loot || !tab || !lootOwner)
+                return;
+
+            bool const isCreatureLoot = &store == &LootTemplates_Creature;
+            if (!isCreatureLoot && &store != &LootTemplates_Gameobject)
+                return;
+
+            Map* map = lootOwner->GetMap();
+            if (!map || !map->IsDungeon())
+                return;
+
+            std::shared_ptr<BossLootCache const> cache = GetBossLootCache();
+            if (!cache)
+                return;
+
+            std::string sourceName;
+            BossItemList const* bossItems = isCreatureLoot
+                ? FindCreatureBossItems(*cache, map, loot->sourceWorldObjectGUID, store, tab, sourceName)
+                : FindChestBossItems(*cache, map, loot->sourceWorldObjectGUID, store, tab, sourceName);
+
+            if (!bossItems)
+                return;
+
+            std::vector<Player*> const players = GetRealPlayers(lootOwner);
+            if (players.empty())
+            {
+                LOG_DEBUG(LOG_NAME, "DLR: [{}] No real players in the instance, nothing added", sourceName);
+                return;
+            }
+
+            std::unordered_set<uint32> present;
+            for (LootItem const& item : loot->items)
+                present.insert(item.itemid);
+            for (LootItem const& item : loot->quest_items)
+                present.insert(item.itemid);
+
+            std::vector<LootStoreItem> picks;
+            for (BossItem const& bossItem : *bossItems)
+            {
+                if (present.count(bossItem.itemId) || !DropsInLootMode(bossItem, lootMode))
+                    continue;
+
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(bossItem.itemId);
+                if (!proto)
+                    continue;
+
+                LootStoreItem storeItem(bossItem.itemId, 0, 100.0f, false, LOOT_MODE_DEFAULT, 0, bossItem.minCount, bossItem.maxCount);
+                LootItem lootItem(storeItem);
+                tab->CopyConditions(&lootItem);
+                storeItem.conditions = lootItem.conditions;
+
+                bool const wanted = std::any_of(players.begin(), players.end(), [&](Player const* player)
+                {
+                    return PlayerWantsItem(player, proto, lootItem, loot->sourceWorldObjectGUID);
+                });
+
+                if (wanted)
+                    picks.push_back(std::move(storeItem));
+            }
+
+            size_t const freeSlots = loot->items.size() < MAX_NR_LOOT_ITEMS ? MAX_NR_LOOT_ITEMS - loot->items.size() : 0;
+            size_t const wantedCount = picks.size();
+
+            // Everything fits: add it all. Otherwise every wanted item gets the same odds of making the cut.
+            if (picks.size() > freeSlots)
+            {
+                Acore::Containers::RandomShuffle(picks);
+                picks.erase(picks.begin() + freeSlots, picks.end());
+            }
+
+            for (LootStoreItem const& pick : picks)
+                loot->AddItem(pick);
+
+            LOG_DEBUG(LOG_NAME, "DLR: [{}] {} boss items, {} wanted by {} real player(s), {} free slots, {} added",
+                sourceName, bossItems->size(), wantedCount, players.size(), freeSlots, picks.size());
+        }
+    };
+}
+
 void AddDynamicLootRateScripts()
 {
     new DynamicLootRates_WorldScript();
-    new DynamicLootRates_GlobalScript();
     new DynamicLootRates_MiscScript();
 }
