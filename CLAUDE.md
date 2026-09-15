@@ -30,6 +30,9 @@ Files:
 - `src/mod_solo_boss_loot.cpp`: all the code
 - `conf/mod_solo_boss_loot.conf.dist`: settings `SoloBossLoot.Enable`, `.SkipOwnedItems`, `.SharedPoolThreshold`, `.WorldDrop.*`
 - `data/sql/db-world/base/solo_boss_loot_overrides.sql`: overrides table and the boss chest list
+- `apps/world_drop_sim.py`: offline world drop simulator for testers (Python, reads the SQL dumps and config files).
+  It mirrors the world drop C++ (`AddDropChances`, `IsWorldDropCandidate`, `BuildWorldDropTable`, `PlayerWantsItem`),
+  so **update it whenever that algorithm or its settings change**. Running it is fine (it isn't a build).
 
 ## How boss loot works
 History: this module started as a fork of hallgaeuer/mod-dynamic-loot-rates. Its dungeon/raid loot rate settings
@@ -142,14 +145,17 @@ Decisions (made with the developer):
   (copying for hundreds of items would be slow); if that fails, drop it from the list and pick again.
 - Added with `Loot::AddItem`, skipped if the window is full.
 
-### Data behind the decisions (base world DB, all server rates 1.0)
+### Data behind the decisions (base world DB, all server rates 1.0, reproduce with `apps/world_drop_sim.py`)
 - Rare drops are stored three ways: direct rows (Scarlet Monk's 0.02% blues), old-style packs (1-2% reference row to
   10 blues or ~100 greens, per item ~0.01-0.05%), and **vanilla level-band packs**: a `Chance 0` grouped reference
   (e.g. Defias Pillager: group 5 picks 1000114 or 1000115) to 150-400 mixed-quality items with their own groups.
   The SQL scripts left those at 0.
-- 7,172 non-boss loot tables, 6,706 with rare items, 4,046 distinct rare items (no item level limit).
+- 7,172 non-boss loot tables, 6,706 with rare items, 5,494 distinct rare items (no item level limit).
+  With `MaxItemLevel = 100` it was 4,046 items, and level 71-80 tables had a median of 25 rare items instead of 231.
 - With the defaults: 5,869 tables hit 15%, 491 are already above it, 346 (1-3 rare items) end with every item at 5%.
-- Per item median: green 0.010% to 0.035%, blue 0.005% to 0.085%, epic 0.004% to 0.12%.
+  6,215 tables get world drops, 2,045 of them unique.
+- Per item median (gear): green 0.010% to 0.036%, blue 0.005% to 0.091%, epic 0.004% to 0.136%.
+  Recipes: green 0.006% to 0.026%, blue 0.004% to 0.048%, epic 0.001% to 0.083%.
 - Extra item chance per kill (median): 14% at level 1-10 down to 7% at 71-80. After the wants check for a warrior,
   hunter or priest with two professions: about 2-7%.
 - Recipe share of bonus drops for a player with two professions: 12-16% at weight 1, 9-13% at 0.75, 7-9% at 0.5.
