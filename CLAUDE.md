@@ -77,7 +77,7 @@ Rejected idea: extra hidden re-rolls of the boss table (very rare items still wo
   Chest loot: a listed chest.
 - The normal roll happens first, unchanged. The module only **adds** items and never removes any.
 - **Bots are ignored completely** (`WorldSession::IsBot()`). Only real players in the group who are in the same
-  instance count. If there are none, nothing is added.
+  instance count. This is checked first: if there are none, nothing is added or logged (bots run dungeons too).
 - An item is added if **any** real player wants it:
   - `AllowableClass` / `AllowableRace` allow them (tier tokens, class books for other classes are skipped)
   - **gear usable:** weapons their class can use (static table per class), their **main armor type only**
@@ -146,8 +146,9 @@ Decisions (made with the developer):
 ### At each non-boss creature kill
 - Creature loot only, default loot mode, not in a battleground or arena, creature isn't a boss (`IsBoss`: same check
   as boss loot, including overrides; this also covers open-world world bosses). The `lootid` must match the template.
-- Roll the table chance first; everything else only runs on a hit (about 7-14% of kills).
 - Needs a real player in the group, in the same map and at group reward distance (`IsAtGroupRewardDistance`).
+  Checked before anything is rolled or logged, so the many bot kills around the world cost almost nothing.
+- Roll the table chance next; everything else only runs on a hit (about 7-14% of kills).
 - Wanted items: not already in the window, and `PlayerWantsItem` passes for any real player (with the profession check).
 - A second roll accepts with `P(any wanted) / P(table)`, so each wanted item keeps its own chance and unwanted items
   just don't drop (they are not replaced).
@@ -185,7 +186,8 @@ Decisions (made with the developer):
   - Info: cache summaries, boss loot or world drops disabled
   - Debug: settings after load, build totals, each boss kill's summary with the items added, each world drop added
   - Trace: per item skip reasons at boss kills (with each real player's reason from `GetUnwantedReason`),
-    world drop rolls that added nothing, one line per boss loot table at build time
+    world drop rolls that added nothing, one line per boss loot table at build time.
+    Kills and chests without a real player (bot kills) are never logged.
 - **Cost:** the `LOG_*` macros only evaluate their arguments when the level is on, so describe helpers
   (`DescribeItem`, `DescribePlayers`, ...) go inside the macro call. Item loops check `ShouldLog` once.
   No per-table trace for world drop tables at build time (thousands of them): `apps/world_drop_sim.py` covers that.

@@ -1257,6 +1257,11 @@ namespace
     void AddBossLoot(LootCache const& cache, Loot* loot, LootTemplate const* tab, LootStore const& store, Player* lootOwner,
         uint16 lootMode, Map* map, bool isCreatureLoot)
     {
+        // Checked first and not logged: bots running dungeons on their own would flood the log
+        std::vector<Player*> const players = GetRealPlayers(lootOwner);
+        if (players.empty())
+            return;
+
         ObjectGuid const source = loot->sourceWorldObjectGUID;
         WorldObject const* sourceObject = nullptr;
         BossItemList const* bossItems = isCreatureLoot
@@ -1265,13 +1270,6 @@ namespace
 
         if (!bossItems)
             return;
-
-        std::vector<Player*> const players = GetRealPlayers(lootOwner);
-        if (players.empty())
-        {
-            LOG_DEBUG(LOG_BOSS, "SoloBossLoot: [{}] No real players in the instance, nothing added", DescribeSource(sourceObject));
-            return;
-        }
 
         std::unordered_set<uint32> present;
         for (LootItem const& item : loot->items)
@@ -1361,6 +1359,11 @@ namespace
         if (!creature || IsBoss(cache, creature))
             return; // bosses get boss loot instead
 
+        // Checked first and not logged: bot kills all over the world would flood the log
+        std::vector<Player*> const players = GetRealPlayers(lootOwner, creature);
+        if (players.empty())
+            return;
+
         uint32 const lootId = creature->GetCreatureTemplate()->lootid;
         if (!lootId || store.GetLootFor(lootId) != tab)
             return; // loot filled from some other table, e.g. by a script
@@ -1382,13 +1385,6 @@ namespace
         if (loot->items.size() >= MAX_NR_LOOT_ITEMS)
         {
             LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: the loot window is full", DescribeSource(creature));
-            return;
-        }
-
-        std::vector<Player*> const players = GetRealPlayers(lootOwner, creature);
-        if (players.empty())
-        {
-            LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: no real player close enough", DescribeSource(creature));
             return;
         }
 

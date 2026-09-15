@@ -176,6 +176,8 @@ SoloBossLoot.WorldDrop.RecipeWeight = 0.75
 #        6 - Trace:   why each item was skipped at a boss kill, world drop rolls that added nothing,
 #                     one line per boss loot table at startup (many lines)
 #
+#    Kills without a real player in the group close by (bot kills) are never logged.
+#
 #    An appender only writes messages up to its own level (Appender.Name=Type,Level,...).
 #
 #    Example (debug for everything, trace for boss kills in its own file):
