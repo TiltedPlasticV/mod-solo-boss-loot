@@ -38,6 +38,11 @@ Files:
 - `apps/world_drop_sim.py`: offline world drop simulator for testers (Python, reads the SQL dumps and config files).
   It mirrors the world drop C++ (`AddDropChances`, `IsWorldDropCandidate`, `BuildWorldDropTable`, `PlayerWantsItem`),
   so **update it whenever that algorithm or its settings change**. Running it is fine (it isn't a build).
+- `apps/world_drop_viz.py` + `apps/world_drop_viz.template.html`: interactive settings visualiser. The script reuses
+  `world_drop_sim.py` for drop chances (rates baked in, items exported up to 25% chance, green and up, any item level),
+  and writes `apps/world_drop_viz.html` (gitignored, about 6 MB) with loot tables deduplicated into base64 typed arrays.
+  The page's JavaScript redoes `BuildWorldDropTable` (`boostCore`) and `PlayerWantsItem` (`wants`) live, so
+  **update the template too when those change**. Its numbers match the simulator's report exactly.
 
 ## How boss loot works
 History: this module started as a fork of hallgaeuer/mod-dynamic-loot-rates. Its dungeon/raid loot rate settings

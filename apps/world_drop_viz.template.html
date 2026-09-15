@@ -1,0 +1,1428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>World Drop Visualiser</title>
+<!--
+  Template for apps/world_drop_viz.py, which replaces the DATA placeholder below with the exported loot tables.
+  The JavaScript mirrors BuildWorldDropTable and PlayerWantsItem in src/mod_solo_boss_loot.cpp.
+-->
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10); --wash: rgba(11,11,11,.05);
+  --accent: #2a78d6; --seq: #2a78d6;
+  --q2: #008300; --q3: #2a78d6; --q4: #e87ba4;
+  --p0: #52514e; --p1: #eb6834; --p2: #1baf7a; --p3: #4a3aa7;
+  --s-hit: #898781; --s-cap: #eda100; --s-above: #4a3aa7; --s-none: #c3c2b7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10); --wash: rgba(255,255,255,.06);
+    --accent: #3987e5; --seq: #3987e5;
+    --q2: #008300; --q3: #3987e5; --q4: #d55181;
+    --p0: #c3c2b7; --p1: #d95926; --p2: #199e70; --p3: #9085e9;
+    --s-hit: #6b6a65; --s-cap: #c98500; --s-above: #9085e9; --s-none: #383835;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10); --wash: rgba(255,255,255,.06);
+  --accent: #3987e5; --seq: #3987e5;
+  --q2: #008300; --q3: #3987e5; --q4: #d55181;
+  --p0: #c3c2b7; --p1: #d95926; --p2: #199e70; --p3: #9085e9;
+  --s-hit: #6b6a65; --s-cap: #c98500; --s-above: #9085e9; --s-none: #383835;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+h1, h2, h3 { margin: 0; font-weight: 600; }
+h1 { font-size: 22px; }
+h2 { font-size: 16px; }
+h3 { font-size: 13px; color: var(--ink2); }
+p { margin: 0; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { background: var(--surface); border: 1px solid var(--ring); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover { background: var(--wash); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.on { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+select, input[type=number], input[type=text], textarea { background: var(--surface); border: 1px solid var(--ring); border-radius: 6px; padding: 4px 6px; }
+.linkbtn { border: 0; background: none; padding: 0 4px; color: var(--muted); }
+.linkbtn:hover { color: var(--ink); background: none; }
+
+.app { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 20px; max-width: 1500px; margin: 0 auto; padding: 20px 16px 60px; }
+.panel { position: sticky; top: 12px; align-self: start; max-height: calc(100vh - 24px); overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+@media (max-width: 900px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .panel { position: static; max-height: none; }
+}
+
+.control { display: grid; grid-template-columns: 1fr 76px; gap: 2px 8px; align-items: center; }
+.control label { font-weight: 600; font-size: 13px; }
+.control input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0; }
+.control .hint { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.control .changed { color: var(--accent); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sub { font-size: 12px; color: var(--muted); }
+.player { border-top: 1px solid var(--grid); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.player-head { display: flex; gap: 6px; align-items: center; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { font-size: 11px; border: 1px solid var(--ring); border-radius: 10px; padding: 1px 7px; cursor: pointer; user-select: none; color: var(--ink2); }
+.chip input { display: none; }
+.chip:has(input:checked) { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.swl { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; flex: none; }
+textarea { width: 100%; height: 150px; font: 12px/1.4 ui-monospace, Consolas, monospace; resize: vertical; }
+
+header { display: flex; flex-direction: column; gap: 6px; }
+.lede { color: var(--ink2); max-width: 900px; }
+details.source { font-size: 12px; color: var(--muted); }
+details.source code { word-break: break-all; }
+summary { cursor: pointer; color: var(--ink2); }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 10px 12px; }
+.tile .label { font-size: 12px; color: var(--ink2); display: flex; gap: 6px; align-items: center; }
+.tile .value { font-size: 24px; font-weight: 600; margin-top: 2px; }
+.tile .foot { font-size: 12px; color: var(--muted); }
+
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.note { color: var(--ink2); font-size: 13px; max-width: 920px; }
+.note b { color: var(--ink); font-weight: 600; }
+.agg { transition: opacity .15s; }
+body.busy .agg { opacity: .55; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink2); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.chart svg { display: block; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .lbl { fill: var(--ink2); font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; }
+@media (max-width: 500px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+
+.creature-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.search { position: relative; flex: 1 1 260px; max-width: 420px; }
+.search input { width: 100%; }
+.list { position: absolute; z-index: 5; left: 0; right: 0; top: 100%; margin-top: 2px; background: var(--surface); border: 1px solid var(--ring);
+  border-radius: 6px; max-height: 320px; overflow-y: auto; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+.list div { padding: 4px 8px; cursor: pointer; }
+.list div:hover, .list div.hl { background: var(--wash); }
+.stages { display: flex; flex-wrap: wrap; gap: 4px; }
+.creature-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; }
+@media (max-width: 1100px) { .creature-grid { grid-template-columns: minmax(0, 1fr); } }
+.stage-text { background: var(--wash); border-radius: 8px; padding: 8px 10px; font-size: 13px; color: var(--ink2); min-height: 3em; }
+.stage-text b { color: var(--ink); }
+.facts { font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.facts dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.facts .pl { display: flex; gap: 6px; align-items: baseline; }
+.dot { transition: transform .7s cubic-bezier(.4,0,.2,1); }
+
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; font-size: 12px; width: 100%; }
+th, td { padding: 3px 8px; border-bottom: 1px solid var(--grid); text-align: left; white-space: nowrap; }
+th { color: var(--ink2); font-weight: 600; }
+th[data-sort] { cursor: pointer; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.mix-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 120px; gap: 10px; align-items: center; font-size: 12px; }
+@media (max-width: 600px) { .mix-row { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
+.bar { display: flex; gap: 2px; height: 18px; }
+.bar.base { height: 6px; margin-top: 3px; opacity: .45; }
+.bar div { height: 100%; min-width: 0; overflow: hidden; color: #fff; font-size: 11px; line-height: 18px; padding-left: 4px; white-space: nowrap; }
+.bar div:first-child { border-radius: 4px 0 0 4px; }
+.bar div:last-child { border-radius: 0 4px 4px 0; }
+.bar div:only-child { border-radius: 4px; }
+
+#tip { position: fixed; z-index: 20; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--ring);
+  border-radius: 8px; padding: 7px 9px; font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); max-width: 340px; }
+#tip .t { font-weight: 600; margin-bottom: 3px; }
+#tip .r { display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+#tip .r span:last-child { font-variant-numeric: tabular-nums; }
+#tip .m { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="panel">
+    <div class="row" style="justify-content:space-between">
+      <h2>Settings</h2>
+      <button id="reset" title="Back to the values from the config file">Reset</button>
+    </div>
+    <div id="controls" style="display:flex;flex-direction:column;gap:12px"></div>
+    <div class="row">
+      <label class="sub" for="minQuality">MinQuality</label>
+      <select id="minQuality"><option value="2">2 green</option><option value="3">3 blue</option><option value="4">4 epic</option></select>
+      <label class="sub" for="maxItemLevel">MaxItemLevel</label>
+      <input id="maxItemLevel" type="number" min="0" max="400" step="1" style="width:64px">
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div class="row"><button id="pin">Pin as baseline</button><button id="unpin" hidden>Clear baseline</button></div>
+      <p class="sub" id="baselineText">Pin the current settings to compare against them: charts show the baseline faded.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div class="row" style="justify-content:space-between"><h2>Players</h2><button id="addPlayer">Add player</button></div>
+      <p class="sub">Fresh characters for the wants check: their class's gear, and recipes only for their professions.</p>
+      <div id="players" style="display:flex;flex-direction:column;gap:8px"></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div class="row" style="justify-content:space-between"><h2>Config lines</h2><button id="copyConf">Copy</button></div>
+      <textarea id="conf" readonly></textarea>
+    </div>
+  </aside>
+
+  <main>
+    <header>
+      <h1>World drop visualiser</h1>
+      <p class="lede">What the <code>SoloBossLoot.WorldDrop.*</code> settings do to rare drops from creatures that aren't bosses.
+        Move a slider on the left and everything below is worked out again for every creature loot table, the same way the module does it at startup.</p>
+      <details class="source"><summary>Data and approximations</summary><div id="source" style="margin-top:4px;display:flex;flex-direction:column;gap:2px"></div></details>
+    </header>
+
+    <section class="tiles agg" id="tiles"></section>
+
+    <section class="card">
+      <h2>One creature, step by step</h2>
+      <p class="note">Each dot is one rare item this creature can drop, on a log scale, rarest on the left.
+        Step through to see what each setting does to it. Gray dots mark the normal chance.</p>
+      <div class="creature-top">
+        <div class="search">
+          <input id="creatureInput" type="text" placeholder="Creature name or entry" autocomplete="off" spellcheck="false">
+          <div id="creatureList" class="list" hidden></div>
+        </div>
+        <button id="randomCreature">Random</button>
+        <div class="stages" id="stages"></div>
+        <button id="play">Play</button>
+      </div>
+      <div class="stage-text" id="stageText"></div>
+      <div class="creature-grid">
+        <div>
+          <div class="legend" id="stageLegend"></div>
+          <div class="chart" id="stageChart"></div>
+        </div>
+        <div class="facts" id="facts"></div>
+      </div>
+      <details><summary>Items table</summary><div class="tablewrap" id="itemTable" style="margin-top:6px"></div></details>
+    </section>
+
+    <section class="card agg">
+      <h2>Extra item per kill, by creature level</h2>
+      <p class="note">How often a kill adds an item (median over the loot tables in each level band). <b>Any rare item</b> is before the wants check;
+        the player lines only count items that player wants, since unwanted items just don't drop.
+        MaxCombinedChance lifts every line. Tables that are already above it get nothing, which pulls the median down.</p>
+      <div class="chart" id="levelChart"></div>
+      <details><summary>Table</summary><div class="tablewrap" id="levelTable"></div></details>
+    </section>
+
+    <section class="card agg">
+      <h2>How loot tables end up</h2>
+      <p class="note"><b>Hits target</b>: scaled so a rare item drops MaxCombinedChance of the time.
+        <b>Every item capped</b>: too few rare items to reach the target even with each at MaxItemChance, so they all sit at MaxItemChance.
+        <b>Already above target</b>: the normal chances already reach MaxCombinedChance, so the creature gets nothing extra.</p>
+      <div class="chart" id="statusChart"></div>
+    </section>
+
+    <section class="card agg">
+      <h2>What the extra items are</h2>
+      <p class="note">Share of extra items by quality (each loot table counts equally), and how many are recipes.
+        QualityWeights and RecipeWeight move these directly. With a low CompressionRatio the original rarity still matters a lot,
+        so the many common greens take most of the budget.</p>
+      <div class="legend" id="mixLegend"></div>
+      <div id="mixChart" style="display:flex;flex-direction:column;gap:10px"></div>
+    </section>
+
+    <section class="card agg">
+      <h2>Chance of one specific item</h2>
+      <p class="note">Chance that a kill drops one particular rare item, over every creature and item pair: the line is the middle half
+        (25th to 75th percentile), the dot the median. Gray is the normal chance, color is after the boost.
+        Hover a row for "1 in N kills".</p>
+      <div class="chart" id="kindsChart"></div>
+      <details><summary>Table</summary><div class="tablewrap" id="kindsTable"></div></details>
+    </section>
+
+    <section class="card agg">
+      <h2>Every rare item: normal chance vs boosted chance</h2>
+      <p class="note">Each cell counts creature and item pairs, darker is more. On the diagonal nothing changed.
+        CompressionRatio tilts the band flatter (the rarest items gain the most), the weights split it by quality,
+        MaxCombinedChance moves it up and down, and MaxItemChance is the ceiling.</p>
+      <div class="row"><span class="sub">Show</span><select id="heatKind"></select></div>
+      <div class="chart" id="heatChart"></div>
+    </section>
+
+    <section class="card">
+      <h2>Sweep one setting</h2>
+      <p class="note">Runs the whole calculation for a range of values of one setting, keeping everything else as it is now.
+        The vertical line marks the current value.</p>
+      <div class="row">
+        <select id="sweepKey"></select>
+        <button id="sweepRun" class="primary">Run sweep</button>
+        <span class="sub" id="sweepStatus"></span>
+      </div>
+      <div class="grid2" id="sweepCharts"></div>
+    </section>
+  </main>
+</div>
+<div id="tip" hidden></div>
+
+<script>const DATA = /*__DATA__*/null;</script>
+<script>
+'use strict';
+const $ = (s, root = document) => root.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+if (!DATA) {
+  document.body.innerHTML = '<p style="padding:20px">This is the template. Run <code>python apps/world_drop_viz.py</code> and open the page it writes.</p>';
+  throw new Error('no data');
+}
+
+// ---------------------------------------------------------------------------
+// Data
+// ---------------------------------------------------------------------------
+function decode(text, Type) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Type(bytes.buffer);
+}
+
+const OFF = decode(DATA.tables.offsets, Uint32Array);   // table t has entries OFF[t]..OFF[t+1], sorted by chance
+const E_ITEM = decode(DATA.tables.items, Uint16Array);  // item index per entry
+const E_CH = decode(DATA.tables.chances, Float32Array); // normal drop chance 0..1 per entry
+const NT = OFF.length - 1, NE = E_ITEM.length, NI = DATA.items.length, NL = DATA.loot.ids.length;
+const E_LOG = new Float64Array(NE), E_LOG10 = new Float64Array(NE);
+for (let e = 0; e < NE; e++) { E_LOG[e] = Math.log(E_CH[e]); E_LOG10[e] = E_LOG[e] / Math.LN10; }
+
+const I_ID = new Int32Array(NI), I_Q = new Uint8Array(NI), I_CLS = new Uint8Array(NI), I_SUB = new Uint8Array(NI), I_INV = new Uint8Array(NI);
+const I_ALLOW = new Int32Array(NI), I_ILVL = new Uint16Array(NI), I_SKILL = new Uint16Array(NI), I_NAME = [];
+DATA.items.forEach(([id, name, quality, cls, subclass, inventoryType, allowableClass, itemLevel, requiredSkill], i) => {
+  I_ID[i] = id; I_NAME[i] = name; I_Q[i] = quality; I_CLS[i] = cls; I_SUB[i] = subclass; I_INV[i] = inventoryType;
+  I_ALLOW[i] = allowableClass; I_ILVL[i] = itemLevel; I_SKILL[i] = requiredSkill;
+});
+
+const LOOT_T = Int32Array.from(DATA.loot.tables), LOOT_LVL = Int32Array.from(DATA.loot.levels);
+const USE = new Float64Array(NT); // loot ids sharing each table
+for (let row = 0; row < NL; row++) USE[LOOT_T[row]]++;
+let MAXLEN = 0;
+for (let t = 0; t < NT; t++) MAXLEN = Math.max(MAXLEN, OFF[t + 1] - OFF[t]);
+
+const BANDS = DATA.levelBands;
+const BAND_OF = level => BANDS.findIndex(([low, high]) => low <= level && level <= high);
+const ITEM_CLASS_WEAPON = 2, ITEM_CLASS_ARMOR = 4, ITEM_CLASS_RECIPE = 9;
+const QUALITY = ['grey', 'white', 'green', 'blue', 'epic', 'legendary', 'artifact', 'heirloom'];
+const TYPE_NAMES = { 1: 'bag', 2: 'weapon', 4: 'armor', 9: 'recipe', 11: 'quiver', 15: 'mount/pet' };
+const qslot = q => Math.min(Math.max(q, 2), 4) - 2;          // 0 green, 1 blue, 2 epic and above
+const Q_COLOR = ['var(--q2)', 'var(--q3)', 'var(--q4)'];
+const Q_LABEL = ['Green', 'Blue', 'Epic+'];
+const KIND_LABEL = ['Green gear', 'Blue gear', 'Epic+ gear', 'Green recipes', 'Blue recipes', 'Epic+ recipes'];
+const kindOf = it => (I_CLS[it] === ITEM_CLASS_RECIPE ? 3 : 0) + qslot(I_Q[it]);
+
+// ---------------------------------------------------------------------------
+// The world drop algorithm (mirrors BuildWorldDropTable)
+// ---------------------------------------------------------------------------
+const ST_NONE = 0, ST_ABOVE = 1, ST_NOBOOST = 2, ST_HIT = 3, ST_CAP = 4;
+const STATUS_LABEL = ['No rare items', 'Already above target', 'No boost', 'Hits target', 'Every item capped'];
+
+function prepare(S) {
+  const weight = new Float64Array(NI), ok = new Uint8Array(NI);
+  const weights = [S.qw0, S.qw1, S.qw2];
+  for (let i = 0; i < NI; i++) {
+    ok[i] = I_Q[i] >= S.minQuality && (!S.maxItemLevel || I_ILVL[i] < S.maxItemLevel) ? 1 : 0;
+    weight[i] = weights[qslot(I_Q[i])] * (I_CLS[i] === ITEM_CLASS_RECIPE ? S.recipeWeight : 1);
+  }
+  return { weight, ok, maxC: S.maxItemChance / 100, target: S.maxCombinedChance / 100, r: S.compression };
+}
+
+// Result of the last boostCore call. cand holds entry indexes of the rare items, boosted their chance after the boost.
+const B = { cand: new Int32Array(MAXLEN), shaped: new Float64Array(MAXLEN), boosted: new Float64Array(MAXLEN),
+            n: 0, status: ST_NONE, scale: 0, logMean: 0, orig: 0, final: 0 };
+
+function boostCore(t, K) {
+  const { cand, shaped, boosted } = B;
+  let n = 0, logSum = 0, miss = 1;
+  for (let e = OFF[t], end = OFF[t + 1]; e < end; e++) {
+    const c = E_CH[e];
+    if (!(c > 0 && c < K.maxC) || !K.ok[E_ITEM[e]]) continue;
+    cand[n] = e; boosted[n] = c; n++;
+    logSum += E_LOG[e]; miss *= 1 - c;
+  }
+  B.n = n; B.orig = B.final = 1 - miss; B.scale = 0; B.logMean = n ? logSum / n : 0;
+  if (!n) { B.status = ST_NONE; return; }
+  if (B.orig >= K.target) { B.status = ST_ABOVE; return; }
+
+  const r = K.r, logMean = B.logMean;
+  let lowest = 0;
+  for (let k = 0; k < n; k++) {
+    const e = cand[k];
+    const value = Math.exp((1 - r) * E_LOG[e] + r * logMean) * K.weight[E_ITEM[e]];
+    shaped[k] = value;
+    if (value > 0 && (lowest === 0 || value < lowest)) lowest = value;
+  }
+  if (lowest === 0) { B.status = ST_NOBOOST; return; }
+
+  const maxC = K.maxC;
+  const apply = scale => {
+    let missAll = 1;
+    for (let k = 0; k < n; k++) {
+      const v = Math.min(maxC, Math.max(E_CH[cand[k]], scale * shaped[k]));
+      boosted[k] = v;
+      missAll *= 1 - v;
+    }
+    return 1 - missAll;
+  };
+
+  let high = maxC / lowest, scale = high, status = ST_CAP;
+  if (apply(high) > K.target) {
+    let low = 0;
+    for (let i = 0; i < 40; i++) {
+      const middle = (low + high) / 2;
+      if (apply(middle) > K.target) high = middle; else low = middle;
+    }
+    scale = low; status = ST_HIT;
+  }
+  B.final = apply(scale); B.scale = scale;
+
+  let any = false;
+  for (let k = 0; k < n && !any; k++) any = boosted[k] > E_CH[cand[k]];
+  B.status = any ? status : ST_NOBOOST;
+}
+
+// ---------------------------------------------------------------------------
+// Players (PlayerWantsItem for a fresh character)
+// ---------------------------------------------------------------------------
+const RULES = DATA.rules;
+const CLASSES = Object.keys(RULES.classMasks);
+const PROFS = Object.keys(RULES.professions);
+
+function mainArmor(cls, high) {
+  if (cls === 'warrior' || cls === 'paladin') return high ? 4 : 3;
+  if (cls === 'deathknight') return 4;
+  if (cls === 'hunter' || cls === 'shaman') return high ? 3 : 2;
+  if (cls === 'rogue' || cls === 'druid') return 2;
+  return 1;
+}
+
+function wants(player, it, high) {
+  if (I_ALLOW[it] !== 0 && (I_ALLOW[it] & RULES.classMasks[player.cls]) === 0) return false;
+  if (I_CLS[it] === ITEM_CLASS_WEAPON) return RULES.classWeapons[player.cls].includes(I_SUB[it]);
+  if (I_CLS[it] === ITEM_CLASS_ARMOR) {
+    const sub = I_SUB[it];
+    if (I_INV[it] === 16 || sub === 0) return true;
+    if (sub >= 1 && sub <= 4) return sub === mainArmor(player.cls, high);
+    if (sub === 5 || sub === 6) return RULES.shieldClasses.includes(player.cls);
+    return RULES.armorRelics[sub] === player.cls;
+  }
+  if (I_CLS[it] === ITEM_CLASS_RECIPE && I_SKILL[it] && !player.skills.has(I_SKILL[it])) return false;
+  return true;
+}
+
+function refreshPlayer(player) {
+  player.skills = new Set([...player.prof].map(name => RULES.professions[name]));
+  player.mask = new Uint8Array(NI); // bit 1: wants below level 40, bit 2: at 40 and above
+  for (let it = 0; it < NI; it++) player.mask[it] = (wants(player, it, false) ? 1 : 0) | (wants(player, it, true) ? 2 : 0);
+}
+
+const levelBit = level => (level >= 40 ? 2 : 1);
+const playerLabel = p => `${p.cls}${p.prof.size ? ' (' + [...p.prof].join(', ') + ')' : ''}`;
+const playersSig = () => players.map(p => p.cls + ':' + [...p.prof].sort().join(',')).join('|');
+
+// ---------------------------------------------------------------------------
+// Every table at once
+// ---------------------------------------------------------------------------
+const HB_LO = -9, HB_PER = 50, HB_N = 450;   // per kind histograms of log10 chance
+const HM_LO = -7, HM_HI = Math.log10(0.5), HM_N = 54;
+const hbBin = l10 => Math.min(HB_N - 1, Math.max(0, Math.floor((l10 - HB_LO) * HB_PER)));
+const hmBin = l10 => Math.min(HM_N - 1, Math.max(0, Math.floor((l10 - HM_LO) / (HM_HI - HM_LO) * HM_N)));
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = Float64Array.from(values).sort();
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function histQuantile(hist, base, q) {
+  let total = 0;
+  for (let b = 0; b < HB_N; b++) total += hist[base + b];
+  if (!total) return 0;
+  const goal = q * total;
+  let cumulative = 0;
+  for (let b = 0; b < HB_N; b++) {
+    const h = hist[base + b];
+    if (h && cumulative + h >= goal) return Math.pow(10, HB_LO + (b + (goal - cumulative) / h) / HB_PER);
+    cumulative += h;
+  }
+  return Math.pow(10, HB_LO + HB_N / HB_PER);
+}
+
+function computeAll(S, players, light) {
+  const K = prepare(S);
+  const P = players.length, G = 1 + 2 * P; // group 0: every item, then each player below 40 and at 40+
+  const status = new Uint8Array(NT);
+  const extraMiss = new Float64Array(NT * G).fill(1), total = new Float64Array(NT * G);
+  const byQuality = new Float64Array(NT * G * 3), recipe = new Float64Array(NT * G);
+  const histBefore = new Float64Array(6 * HB_N), histAfter = new Float64Array(6 * HB_N);
+  const heat = light ? null : Array.from({ length: 6 }, () => new Float64Array(HM_N * HM_N));
+  const itemBoosted = new Uint8Array(NI);
+  const tN = new Uint32Array(NT), tOrig = new Float64Array(NT), tFinal = new Float64Array(NT);
+  let uniqueBoosted = 0;
+
+  for (let t = 0; t < NT; t++) {
+    boostCore(t, K);
+    status[t] = B.status;
+    tN[t] = B.n; tOrig[t] = B.orig; tFinal[t] = B.final;
+    if (!B.n) continue;
+    if (B.status === ST_HIT || B.status === ST_CAP) uniqueBoosted++;
+    const use = USE[t];
+    for (let k = 0; k < B.n; k++) {
+      const e = B.cand[k], it = E_ITEM[e], c = E_CH[e], v = B.boosted[k];
+      const kind = kindOf(it);
+      const l10 = Math.log10(v);
+      histBefore[kind * HB_N + hbBin(E_LOG10[e])] += use;
+      histAfter[kind * HB_N + hbBin(l10)] += use;
+      if (heat) heat[kind][hmBin(E_LOG10[e]) * HM_N + hmBin(l10)] += use;
+      if (!(v > c)) continue;
+
+      const extra = (v - c) / (1 - c), q = qslot(I_Q[it]), isRecipe = I_CLS[it] === ITEM_CLASS_RECIPE;
+      itemBoosted[it] = 1;
+      for (let g = 0; g < G; g++) {
+        if (g > 0 && !(players[(g - 1) >> 1].mask[it] & ((g - 1) & 1 ? 2 : 1))) continue;
+        const slot = t * G + g;
+        extraMiss[slot] *= 1 - extra;
+        total[slot] += extra;
+        byQuality[slot * 3 + q] += extra;
+        if (isRecipe) recipe[slot] += extra;
+      }
+    }
+  }
+
+  const bands = BANDS.map(([low, high]) => ({ label: `${low}-${high > 80 ? '+' : high}`, rows: 0, n: [], orig: [], final: [], extra: [],
+                                             players: players.map(() => []), status: [0, 0, 0, 0, 0] }));
+  const allExtra = [], allPlayers = players.map(() => []);
+  const mix = Array.from({ length: 1 + P }, () => ({ q: [0, 0, 0], recipe: 0 }));
+  const statusTotals = [0, 0, 0, 0, 0];
+  let tablesWithRare = 0, tablesBoosted = 0;
+
+  for (let row = 0; row < NL; row++) {
+    const t = LOOT_T[row], s = status[t];
+    if (s === ST_NONE) continue;
+    tablesWithRare++;
+    statusTotals[s]++;
+    const level = LOOT_LVL[row], bit = level >= 40 ? 1 : 0;
+    const extra = 1 - extraMiss[t * G];
+    if (extra > 0) tablesBoosted++;
+    allExtra.push(extra);
+    const band = bands[BAND_OF(level)];
+    if (band) {
+      band.rows++; band.status[s]++;
+      band.n.push(tN[t]); band.orig.push(tOrig[t]); band.final.push(tFinal[t]); band.extra.push(extra);
+    }
+    for (let m = 0; m <= P; m++) {
+      const slot = t * G + (m === 0 ? 0 : 1 + 2 * (m - 1) + bit);
+      if (m > 0) {
+        const pe = 1 - extraMiss[slot];
+        allPlayers[m - 1].push(pe);
+        if (band) band.players[m - 1].push(pe);
+      }
+      if (total[slot] > 0) {
+        for (let q = 0; q < 3; q++) mix[m].q[q] += byQuality[slot * 3 + q] / total[slot];
+        mix[m].recipe += recipe[slot] / total[slot];
+      }
+    }
+  }
+
+  return {
+    tablesWithRare, tablesBoosted, uniqueBoosted, statusTotals,
+    itemsBoosted: itemBoosted.reduce((a, b) => a + b, 0),
+    medExtra: median(allExtra), medPlayers: allPlayers.map(median),
+    bands: bands.map(b => ({ label: b.label, rows: b.rows, status: b.status, n: median(b.n), orig: median(b.orig), final: median(b.final),
+                             extra: median(b.extra), players: b.players.map(median) })),
+    mix: mix.map(m => {
+      const sum = m.q[0] + m.q[1] + m.q[2];
+      return sum ? { q: m.q.map(v => v / sum), recipe: m.recipe / sum } : { q: [0, 0, 0], recipe: 0 };
+    }),
+    kinds: KIND_LABEL.map((label, kind) => {
+      let rows = 0;
+      for (let b = 0; b < HB_N; b++) rows += histBefore[kind * HB_N + b];
+      return { label, rows, before: [0.25, 0.5, 0.75].map(q => histQuantile(histBefore, kind * HB_N, q)),
+               after: [0.25, 0.5, 0.75].map(q => histQuantile(histAfter, kind * HB_N, q)) };
+    }),
+    heat,
+    playersSig: playersSig(),
+  };
+}
+
+// One table in detail, for the creature view
+function tableDetail(t, S, level) {
+  const K = prepare(S);
+  boostCore(t, K);
+  const r = K.r, items = [];
+  for (let k = 0; k < B.n; k++) {
+    const e = B.cand[k], it = E_ITEM[e], c = E_CH[e];
+    const compressed = Math.exp((1 - r) * E_LOG[e] + r * B.logMean);
+    const weighted = compressed * K.weight[it];
+    const boosted = B.boosted[k];
+    items.push({ it, c, compressed, weighted, scaled: B.scale ? weighted * B.scale : weighted, boosted,
+                 extra: boosted > c ? (boosted - c) / (1 - c) : 0 });
+  }
+  let excluded = 0;
+  for (let e = OFF[t]; e < OFF[t + 1]; e++) if (!(E_CH[e] > 0 && E_CH[e] < K.maxC) || !K.ok[E_ITEM[e]]) excluded++;
+  const combined = values => 1 - values.reduce((miss, v) => miss * (1 - v), 1);
+  return {
+    items, excluded, status: B.status, scale: B.scale, mean: Math.exp(B.logMean), orig: B.orig, final: B.final,
+    extra: combined(items.map(i => i.extra)), K, level,
+    players: players.map(p => {
+      const wanted = items.filter(i => i.extra > 0 && p.mask[i.it] & levelBit(level));
+      return { wanted: wanted.length, extra: combined(wanted.map(i => i.extra)) };
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Formatting and chart helpers
+// ---------------------------------------------------------------------------
+function fmtPct(p) {
+  if (!(p > 0)) return '0%';
+  const x = p * 100;
+  if (x >= 10) return x.toFixed(1) + '%';
+  if (x >= 1) return x.toFixed(2) + '%';
+  return x.toFixed(Math.min(8, Math.ceil(-Math.log10(x)) + 1)) + '%';
+}
+const fmtNum = (v, d = 0) => v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtOneIn = p => (p > 0 ? '1 in ' + fmtNum(Math.max(1, Math.round(1 / p))) : 'never');
+const fmtShare = v => (v * 100).toFixed(v < 0.1 ? 1 : 0) + '%';
+
+const tip = $('#tip');
+function showTip(html, x, y) {
+  tip.innerHTML = html;
+  tip.hidden = false;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let left = x + 14, top = y + 14;
+  if (left + w > window.innerWidth - 8) left = x - w - 14;
+  if (top + h > window.innerHeight - 8) top = y - h - 14;
+  tip.style.left = Math.max(8, left) + 'px';
+  tip.style.top = Math.max(8, top) + 'px';
+}
+const hideTip = () => { tip.hidden = true; };
+document.addEventListener('mousemove', event => {
+  if (event.target.closest?.('[data-own-tip]')) return;
+  const target = event.target.closest?.('[data-tip]');
+  if (target) showTip(target.dataset.tip, event.clientX, event.clientY); else hideTip();
+});
+const tipRow = (label, value, swatch) => `<div class="r"><span>${swatch || ''}${label}</span><span>${value}</span></div>`;
+const swatch = (color, line) => `<span class="${line ? 'swl' : 'sw'}" style="background:${color};margin-right:5px"></span>`;
+
+function niceTicks(min, max, count = 5) {
+  const span = max - min || 1;
+  const raw = span / count, mag = Math.pow(10, Math.floor(Math.log10(raw))), norm = raw / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const ticks = [];
+  for (let v = Math.ceil(min / step - 1e-9) * step; v <= max + step * 1e-9; v += step) ticks.push(+v.toPrecision(12));
+  return ticks;
+}
+
+function logTicks(min, max) {
+  const lo = Math.floor(Math.log10(min)), hi = Math.ceil(Math.log10(max));
+  let ticks = [];
+  for (let k = lo; k <= hi; k++) ticks.push(Math.pow(10, k));
+  if (hi - lo <= 2) { ticks = []; for (let k = lo; k <= hi; k++) for (const m of [1, 2, 5]) ticks.push(m * Math.pow(10, k)); }
+  ticks = ticks.filter(v => v >= min * 0.999 && v <= max * 1.001);
+  if (ticks.length > 8) ticks = ticks.filter((_, i) => i % 2 === 0);
+  return ticks;
+}
+
+function makeScale(d0, d1, r0, r1, log) {
+  if (log) {
+    const l0 = Math.log10(d0), l1 = Math.log10(d1);
+    const f = v => r0 + (Math.log10(Math.max(v, d0 / 1e3)) - l0) / (l1 - l0 || 1) * (r1 - r0);
+    f.inv = p => Math.pow(10, l0 + (p - r0) / (r1 - r0) * (l1 - l0));
+    return f;
+  }
+  const f = v => r0 + (v - d0) / (d1 - d0 || 1) * (r1 - r0);
+  f.inv = p => d0 + (p - r0) / (r1 - r0) * (d1 - d0);
+  return f;
+}
+
+function tableHTML(headers, rows) {
+  return `<table><thead><tr>${headers.map(h => `<th class="${h.num ? 'num' : ''}">${esc(h.label)}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map(row => `<tr>${row.map((cell, i) => `<td class="${headers[i].num ? 'num' : ''}">${cell}</td>`).join('')}</tr>`).join('') +
+    '</tbody></table>';
+}
+
+// Line chart. cfg: x (numbers), xTicks [{v, label}] or xFormat, series [{name, color, values, base}], yFormat, log, marker, height
+function lineChart(box, cfg) {
+  const W = Math.max(280, box.clientWidth), H = cfg.height || 240;
+  const direct = cfg.series.length <= 4;
+  const m = { l: 62, r: direct ? 118 : 16, t: 10, b: 30 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const xs = cfg.x;
+  const X = makeScale(Math.min(...xs), Math.max(...xs), m.l, m.l + pw);
+  const values = cfg.series.flatMap(s => [...s.values, ...(s.base || [])]).filter(v => v != null && isFinite(v) && (!cfg.log || v > 0));
+  let y0, y1;
+  if (cfg.log) { y0 = Math.min(...values) / 1.4; y1 = Math.max(...values) * 1.4; if (!(y0 > 0)) { y0 = 1e-6; y1 = 1; } }
+  else { y0 = 0; y1 = Math.max(1e-9, ...values) * 1.1; const t = niceTicks(0, y1); y1 = Math.max(y1, t[t.length - 1]); }
+  const Y = makeScale(y0, y1, m.t + ph, m.t, cfg.log);
+  const yTicks = cfg.log ? logTicks(y0, y1) : niceTicks(y0, y1);
+  const xTicks = cfg.xTicks || niceTicks(Math.min(...xs), Math.max(...xs), Math.max(2, Math.floor(pw / 80))).map(v => ({ v, label: cfg.xFormat ? cfg.xFormat(v) : v }));
+  const path = vals => {
+    let d = '', pen = false;
+    vals.forEach((v, i) => {
+      if (v == null || !isFinite(v) || (cfg.log && !(v > 0))) { pen = false; return; }
+      d += `${pen ? 'L' : 'M'}${X(xs[i]).toFixed(1)},${Y(v).toFixed(1)}`; pen = true;
+    });
+    return d;
+  };
+
+  let svg = `<svg width="${W}" height="${H}">`;
+  for (const v of yTicks) svg += `<line x1="${m.l}" x2="${m.l + pw}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--grid)"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${cfg.yFormat(v)}</text>`;
+  svg += `<line x1="${m.l}" x2="${m.l + pw}" y1="${m.t + ph}" y2="${m.t + ph}" style="stroke:var(--axis)"/>`;
+  for (const t of xTicks) svg += `<text x="${X(t.v)}" y="${m.t + ph + 18}" text-anchor="middle">${esc(t.label)}</text>`;
+  if (cfg.xLabel) svg += `<text x="${m.l + pw}" y="${H - 1}" text-anchor="end">${esc(cfg.xLabel)}</text>`;
+  if (cfg.marker != null) svg += `<line x1="${X(cfg.marker)}" x2="${X(cfg.marker)}" y1="${m.t}" y2="${m.t + ph}" style="stroke:var(--ink2);stroke-width:1"/>`;
+  for (const s of cfg.series) if (s.base) svg += `<path d="${path(s.base)}" style="fill:none;stroke:${s.color};stroke-width:1.5;opacity:.35;stroke-linejoin:round"/>`;
+  for (const s of cfg.series) svg += `<path d="${path(s.values)}" style="fill:none;stroke:${s.color};stroke-width:2;stroke-linejoin:round;stroke-linecap:round"/>`;
+  if (xs.length <= 16) for (const s of cfg.series) s.values.forEach((v, i) => {
+    if (v != null && isFinite(v) && (!cfg.log || v > 0)) svg += `<circle cx="${X(xs[i])}" cy="${Y(v)}" r="2.5" style="fill:${s.color}"/>`;
+  });
+  if (direct) {
+    const ends = cfg.series.map(s => {
+      let i = s.values.length - 1;
+      while (i >= 0 && !(s.values[i] != null && isFinite(s.values[i]) && (!cfg.log || s.values[i] > 0))) i--;
+      return i < 0 ? null : { s, y: Y(s.values[i]) };
+    }).filter(Boolean).sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i++) ends[i].y = Math.max(ends[i].y, ends[i - 1].y + 13);
+    for (const end of ends) svg += `<text class="lbl" x="${m.l + pw + 8}" y="${end.y + 4}">${esc(end.s.name.length > 16 ? end.s.name.slice(0, 15) + '…' : end.s.name)}</text>`;
+  }
+  svg += `<line class="cross" x1="0" x2="0" y1="${m.t}" y2="${m.t + ph}" style="stroke:var(--axis);visibility:hidden"/><g class="hdots"></g>`;
+  svg += `<rect class="hit" data-own-tip="1" x="${m.l}" y="${m.t}" width="${pw}" height="${ph}" style="fill:transparent"/></svg>`;
+
+  const legend = cfg.series.length > 1 || cfg.series.some(s => s.base)
+    ? `<div class="legend">${cfg.series.map(s => `<span>${swatch(s.color, true)}${esc(s.name)}</span>`).join('')}${cfg.series.some(s => s.base) ? '<span class="m">faded: baseline</span>' : ''}</div>` : '';
+  box.innerHTML = (cfg.title ? `<h3>${esc(cfg.title)}</h3>` : '') + legend + svg;
+
+  const hit = $('.hit', box), cross = $('.cross', box), dots = $('.hdots', box);
+  hit.addEventListener('mousemove', event => {
+    const px = event.clientX - hit.getBoundingClientRect().left + m.l;
+    let best = 0;
+    xs.forEach((v, i) => { if (Math.abs(X(v) - px) < Math.abs(X(xs[best]) - px)) best = i; });
+    const x = X(xs[best]);
+    cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.style.visibility = 'visible';
+    dots.innerHTML = cfg.series.map(s => {
+      const v = s.values[best];
+      return v != null && isFinite(v) && (!cfg.log || v > 0) ? `<circle cx="${x}" cy="${Y(v)}" r="4.5" style="fill:${s.color};stroke:var(--surface);stroke-width:2"/>` : '';
+    }).join('');
+    const label = cfg.xTicks ? cfg.xTicks[best]?.label ?? xs[best] : (cfg.xFormat ? cfg.xFormat(xs[best]) : xs[best]);
+    showTip(`<div class="t">${esc(cfg.xName ? cfg.xName + ' ' + label : label)}</div>` + cfg.series.map(s => {
+      const v = s.values[best];
+      const base = s.base ? ` <span class="m">(was ${s.base[best] == null ? '-' : cfg.yFormat(s.base[best])})</span>` : '';
+      return tipRow(esc(s.name), (v == null ? '-' : cfg.yFormat(v)) + base, swatch(s.color, true));
+    }).join(''), event.clientX, event.clientY);
+  });
+  hit.addEventListener('mouseleave', () => { cross.style.visibility = 'hidden'; dots.innerHTML = ''; hideTip(); });
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+const CONTROLS = [
+  { key: 'maxItemChance', label: 'MaxItemChance', unit: '%', min: 0.1, max: DATA.exportMaxItemChance, step: 0.1,
+    hint: 'Items rarer than this are boosted, and never go above it.' },
+  { key: 'maxCombinedChance', label: 'MaxCombinedChance', unit: '%', min: 0.5, max: 60, step: 0.5, inputMax: 99,
+    hint: 'Target chance that one of a creature\'s rare items drops.' },
+  { key: 'compression', label: 'CompressionRatio', min: 0, max: 1, step: 0.01,
+    hint: '0 keeps relative chances, 1 gives every item the same chance.' },
+  { key: 'qw0', label: 'QualityWeights: green', min: 0, max: 20, step: 0.1, hint: 'First of the three QualityWeights.' },
+  { key: 'qw1', label: 'QualityWeights: blue', min: 0, max: 20, step: 0.1, hint: '' },
+  { key: 'qw2', label: 'QualityWeights: epic+', min: 0, max: 20, step: 0.1, hint: '' },
+  { key: 'recipeWeight', label: 'RecipeWeight', min: 0, max: 3, step: 0.05, inputMax: 100,
+    hint: 'Multiplies the quality weight for recipes.' },
+];
+
+const CONF = DATA.settings;
+const FROM_CONF = { maxItemChance: CONF.maxItemChance, maxCombinedChance: CONF.maxCombinedChance, compression: CONF.compression,
+                    qw0: CONF.qualityWeights[0], qw1: CONF.qualityWeights[1], qw2: CONF.qualityWeights[2],
+                    recipeWeight: CONF.recipeWeight, minQuality: CONF.minQuality, maxItemLevel: CONF.maxItemLevel };
+const S = { ...FROM_CONF };
+S.maxItemChance = Math.min(S.maxItemChance, DATA.exportMaxItemChance);
+
+let players = DATA.players.map((p, i) => ({ cls: p.cls, prof: new Set(p.professions), slot: i + 1 }));
+players.forEach(refreshPlayer);
+let summary = null, baseline = null, stage = 5, selected = null, lastMs = 0;
+
+// ---------------------------------------------------------------------------
+// Settings panel
+// ---------------------------------------------------------------------------
+function buildControls() {
+  $('#controls').innerHTML = CONTROLS.map(c => `
+    <div class="control">
+      <label for="n-${c.key}">${c.label}${c.unit ? ' (' + c.unit + ')' : ''}</label>
+      <input id="n-${c.key}" type="number" min="${c.min === 0.1 ? 0.01 : c.min}" max="${c.inputMax || c.max}" step="${c.step}" data-key="${c.key}">
+      <input id="r-${c.key}" type="range" min="${c.min}" max="${c.max}" step="${c.step}" data-key="${c.key}" aria-label="${c.label}">
+      ${c.hint ? `<div class="hint">${esc(c.hint)}</div>` : ''}
+    </div>`).join('');
+  $('#controls').addEventListener('input', event => {
+    const key = event.target.dataset.key;
+    if (!key) return;
+    const c = CONTROLS.find(c => c.key === key);
+    let v = parseFloat(event.target.value);
+    if (!isFinite(v)) return;
+    v = Math.min(Math.max(v, c.min === 0.1 ? 0.01 : c.min), c.inputMax || c.max);
+    S[key] = v;
+    syncControls(event.target);
+    settingsChanged();
+  });
+  $('#minQuality').addEventListener('change', e => { S.minQuality = +e.target.value; settingsChanged(); });
+  $('#maxItemLevel').addEventListener('input', e => { const v = parseInt(e.target.value, 10); S.maxItemLevel = v > 0 ? v : 0; settingsChanged(); });
+}
+
+function syncControls(except) {
+  for (const c of CONTROLS) {
+    const number = $('#n-' + c.key), range = $('#r-' + c.key);
+    if (number !== except) number.value = +S[c.key].toFixed(4);
+    if (range !== except) range.value = S[c.key];
+    number.closest('.control').querySelector('label').classList.toggle('changed', S[c.key] !== FROM_CONF[c.key]);
+  }
+  $('#minQuality').value = S.minQuality;
+  if ($('#maxItemLevel') !== except) $('#maxItemLevel').value = S.maxItemLevel;
+}
+
+function confText(settings) {
+  const p = 'SoloBossLoot.WorldDrop.';
+  const n = v => +(+v).toFixed(4);
+  return [`${p}MinQuality = ${settings.minQuality}`, `${p}MaxItemLevel = ${settings.maxItemLevel}`,
+          `${p}MaxItemChance = ${n(settings.maxItemChance)}`, `${p}MaxCombinedChance = ${n(settings.maxCombinedChance)}`,
+          `${p}CompressionRatio = ${n(settings.compression)}`, `${p}QualityWeights = "${n(settings.qw0)} ${n(settings.qw1)} ${n(settings.qw2)}"`,
+          `${p}RecipeWeight = ${n(settings.recipeWeight)}`].join('\n');
+}
+
+function renderPlayers() {
+  $('#players').innerHTML = players.map((p, i) => `
+    <div class="player">
+      <div class="player-head">
+        <span class="sw" style="background:var(--p${p.slot})"></span>
+        <select data-i="${i}" aria-label="Class">${CLASSES.map(c => `<option ${c === p.cls ? 'selected' : ''}>${c}</option>`).join('')}</select>
+        <span style="flex:1"></span>
+        <button class="linkbtn" data-remove="${i}">Remove</button>
+      </div>
+      <div class="chips">${PROFS.map(name => `<label class="chip"><input type="checkbox" data-i="${i}" data-prof="${name}" ${p.prof.has(name) ? 'checked' : ''}><span>${name}</span></label>`).join('')}</div>
+    </div>`).join('');
+  $('#addPlayer').disabled = players.length >= 3;
+}
+
+function playersChanged() {
+  renderPlayers();
+  renderCreature();
+  scheduleCompute();
+  markSweepStale();
+}
+
+// ---------------------------------------------------------------------------
+// Rendering: tiles and aggregates
+// ---------------------------------------------------------------------------
+function renderSource() {
+  const src = DATA.source;
+  $('#source').innerHTML = [
+    `World database: <code>${esc(src.db)}</code>`,
+    `Starting settings: <code>${esc(src.conf)}</code>`,
+    `Drop rates: ${esc(src.rates)} (baked in; run the script again with <code>--worldserver-conf</code> to change them)`,
+    `${fmtNum(src.nonBossTables)} non-boss creature loot tables, ${fmtNum(NL)} with items that could be rare, ${fmtNum(NT)} unique, ${fmtNum(NE)} item rows, ${fmtNum(NI)} items.`,
+    'Same approximations as world_drop_sim.py: players are fresh characters (nothing owned or learned), race limits and loot conditions are ignored, battleground creatures are included, and bosses come from instance_encounters, boss flags and the module\'s overrides SQL file.',
+    'Items above 25% normal chance aren\'t exported, so MaxItemChance stops there. Medians of per-item chances are read from fine histograms (within about 5%).',
+  ].map(line => `<div>${line}</div>`).join('');
+}
+
+function renderTiles() {
+  const s = summary, b = baseline?.summary, samePlayers = b && b.playersSig === s.playersSig;
+  const was = (v, fmt) => (b ? ` <span>(baseline ${fmt(v)})</span>` : '');
+  const tiles = [
+    { label: 'Loot tables with world drops', value: fmtNum(s.tablesBoosted),
+      foot: `of ${fmtNum(s.tablesWithRare)} with rare items${was(b?.tablesBoosted, fmtNum)}` },
+    { label: 'Extra item per kill', value: fmtPct(s.medExtra), foot: `median, any rare item${was(b?.medExtra, fmtPct)}` },
+    ...players.map((p, i) => ({ label: `${swatch(`var(--p${p.slot})`)}Extra item: ${esc(p.cls)}`, value: fmtPct(s.medPlayers[i]),
+      foot: `median, items they want${samePlayers ? was(b.medPlayers[i], fmtPct) : ''}` })),
+    { label: 'Items that can drop extra', value: fmtNum(s.itemsBoosted), foot: `distinct items${was(b?.itemsBoosted, fmtNum)}` },
+  ];
+  $('#tiles').innerHTML = tiles.map(t => `<div class="tile"><div class="label">${t.label}</div><div class="value">${t.value}</div><div class="foot">${t.foot}</div></div>`).join('');
+}
+
+function renderLevels() {
+  const s = summary, b = baseline?.summary, samePlayers = b && b.playersSig === s.playersSig;
+  const bands = s.bands.map((band, i) => ({ band, i })).filter(({ band }) => band.rows > 0);
+  const x = bands.map(({ i }) => i);
+  const series = [{ name: 'Any rare item', color: 'var(--p0)', values: bands.map(({ band }) => band.extra), base: b && bands.map(({ i }) => b.bands[i].extra) }]
+    .concat(players.map((p, pi) => ({ name: p.cls, color: `var(--p${p.slot})`, values: bands.map(({ band }) => band.players[pi]),
+                                     base: samePlayers ? bands.map(({ i }) => b.bands[i].players[pi]) : null })));
+  lineChart($('#levelChart'), { x, xTicks: bands.map(({ band, i }) => ({ v: i, label: band.label })), xName: 'Creature level', xLabel: 'creature level',
+                                series, yFormat: fmtPct, height: 260 });
+  $('#levelTable').innerHTML = tableHTML(
+    [{ label: 'Level' }, { label: 'Tables', num: 1 }, { label: 'Rare items', num: 1 }, { label: 'Rare drop, normal', num: 1 },
+     { label: 'Rare drop, boosted', num: 1 }, { label: 'Extra item', num: 1 }, ...players.map(p => ({ label: `Extra: ${p.cls}`, num: 1 }))],
+    bands.map(({ band }) => [band.label, fmtNum(band.rows), fmtNum(band.n), fmtPct(band.orig), fmtPct(band.final), fmtPct(band.extra),
+                             ...band.players.map(fmtPct)]));
+}
+
+function renderStatus() {
+  const box = $('#statusChart'), s = summary, b = baseline?.summary;
+  const segs = [{ st: ST_HIT, color: 'var(--s-hit)' }, { st: ST_CAP, color: 'var(--s-cap)' }, { st: ST_ABOVE, color: 'var(--s-above)' }, { st: ST_NOBOOST, color: 'var(--s-none)' }];
+  const rows = [{ label: 'All levels', status: s.statusTotals, base: b?.statusTotals }]
+    .concat(s.bands.map((band, i) => ({ label: band.label, status: band.status, base: b?.bands[i].status })).filter(r => r.status.some(Boolean)));
+  const used = segs.filter(seg => rows.some(r => r.status[seg.st] || r.base?.[seg.st]));
+  const bar = (status, cls) => {
+    const total = used.reduce((sum, seg) => sum + status[seg.st], 0) || 1;
+    return `<div class="bar ${cls}">${used.filter(seg => status[seg.st]).map(seg => {
+      const share = status[seg.st] / total;
+      return `<div style="flex:${share} 1 0;background:${seg.color}" data-tip="${esc(`<div class="t">${STATUS_LABEL[seg.st]}</div>${fmtNum(status[seg.st])} loot tables (${fmtShare(share)})`)}">${cls ? '' : share > 0.09 ? fmtShare(share) : ''}</div>`;
+    }).join('')}</div>`;
+  };
+  box.innerHTML = `<div class="legend" style="margin-bottom:8px">${used.map(seg => `<span>${swatch(seg.color)}${STATUS_LABEL[seg.st]}</span>`).join('')}${b ? '<span class="m">thin bar: baseline</span>' : ''}</div>` +
+    '<div style="display:flex;flex-direction:column;gap:6px">' +
+    rows.map(r => `<div class="mix-row"><div>${esc(r.label)} <span class="sub">${fmtNum(r.status.reduce((a, v) => a + v, 0))}</span></div><div>${bar(r.status, '')}${r.base ? bar(r.base, 'base') : ''}</div><div class="sub">${fmtShare((r.status[ST_ABOVE]) / (r.status.reduce((a, v) => a + v, 0) || 1))} get nothing</div></div>`).join('') +
+    '</div>';
+}
+
+function renderMix() {
+  const s = summary, b = baseline?.summary, samePlayers = b && b.playersSig === s.playersSig;
+  $('#mixLegend').innerHTML = Q_LABEL.map((label, q) => `<span>${swatch(Q_COLOR[q])}${label}</span>`).join('') + (b ? '<span class="m">thin bar: baseline</span>' : '');
+  const rows = [{ label: 'Any rare item', color: 'var(--p0)', mix: s.mix[0], base: b?.mix[0] }]
+    .concat(players.map((p, i) => ({ label: playerLabel(p), color: `var(--p${p.slot})`, mix: s.mix[i + 1], base: samePlayers ? b.mix[i + 1] : null })));
+  const bar = (mix, cls) => `<div class="bar ${cls}">${mix.q.map((share, q) => share > 0
+    ? `<div style="flex:${share} 1 0;background:${Q_COLOR[q]}" data-tip="${esc(`<div class="t">${Q_LABEL[q]}</div>${fmtShare(share)} of extra items`)}">${cls ? '' : share > 0.08 ? fmtShare(share) : ''}</div>` : '').join('')}</div>`;
+  $('#mixChart').innerHTML = rows.map(r => `
+    <div class="mix-row">
+      <div style="display:flex;gap:6px;align-items:center;min-width:0">${swatch(r.color, true)}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.label)}">${esc(r.label)}</span></div>
+      <div>${bar(r.mix, '')}${r.base ? bar(r.base, 'base') : ''}</div>
+      <div>Recipes ${fmtShare(r.mix.recipe)}${r.base ? ` <span class="sub">(was ${fmtShare(r.base.recipe)})</span>` : ''}</div>
+    </div>`).join('');
+}
+
+function renderKinds() {
+  const box = $('#kindsChart'), s = summary, b = baseline?.summary;
+  const kinds = s.kinds.map((k, i) => ({ ...k, i, base: b?.kinds[i] })).filter(k => k.rows > 0);
+  if (!kinds.length) { box.innerHTML = '<p class="sub">No rare items with these settings.</p>'; return; }
+  const W = Math.max(300, box.clientWidth), rowH = 34, m = { l: 118, r: W > 560 ? 170 : 12, t: 8, b: 30 };
+  const H = m.t + m.b + kinds.length * rowH, pw = W - m.l - m.r;
+  const values = kinds.flatMap(k => [...k.before, ...k.after, ...(k.base ? k.base.after : [])]).filter(v => v > 0);
+  const x0 = Math.min(...values) / 1.6, x1 = Math.max(S.maxItemChance / 100, ...values) * 1.6;
+  const X = makeScale(x0, x1, m.l, m.l + pw, true);
+  let svg = `<svg width="${W}" height="${H}">`;
+  for (const v of logTicks(x0, x1)) svg += `<line x1="${X(v)}" x2="${X(v)}" y1="${m.t}" y2="${H - m.b}" style="stroke:var(--grid)"/><text x="${X(v)}" y="${H - m.b + 16}" text-anchor="middle">${fmtPct(v)}</text>`;
+  const capX = X(S.maxItemChance / 100);
+  svg += `<line x1="${capX}" x2="${capX}" y1="${m.t}" y2="${H - m.b}" style="stroke:var(--ink2)"/><text x="${capX}" y="${H - 2}" text-anchor="middle" class="lbl">MaxItemChance</text>`;
+  kinds.forEach((k, row) => {
+    const y = m.t + row * rowH + rowH / 2, q = k.i % 3, color = Q_COLOR[q], recipe = k.i >= 3;
+    const mark = (x, style, r) => recipe
+      ? `<path d="M${x},${y - r - 1}L${x + r + 1},${y}L${x},${y + r + 1}L${x - r - 1},${y}Z" style="${style}"/>`
+      : `<circle cx="${x}" cy="${y}" r="${r}" style="${style}"/>`;
+    const tipHtml = `<div class="t">${k.label}</div><div class="m">${fmtNum(k.rows)} creature and item pairs</div>` +
+      tipRow('Normal median', `${fmtPct(k.before[1])} (${fmtOneIn(k.before[1])})`) +
+      tipRow('Boosted median', `${fmtPct(k.after[1])} (${fmtOneIn(k.after[1])})`) +
+      tipRow('Boosted middle half', `${fmtPct(k.after[0])} to ${fmtPct(k.after[2])}`) +
+      (k.base ? tipRow('Baseline median', `${fmtPct(k.base.after[1])} (${fmtOneIn(k.base.after[1])})`) : '');
+    svg += `<g data-tip="${esc(tipHtml)}"><rect x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}" style="fill:transparent"/>`;
+    svg += `<text class="lbl" x="0" y="${y + 4}">${k.label}</text>`;
+    svg += `<line x1="${X(k.before[0])}" x2="${X(k.before[2])}" y1="${y}" y2="${y}" style="stroke:var(--axis);stroke-width:4;stroke-linecap:round"/>`;
+    svg += `<line x1="${X(k.after[0])}" x2="${X(k.after[2])}" y1="${y}" y2="${y}" style="stroke:${color};stroke-width:4;stroke-linecap:round;opacity:.55"/>`;
+    svg += mark(X(k.before[1]), 'fill:var(--muted);stroke:var(--surface);stroke-width:2', 4.5);
+    if (k.base) svg += mark(X(k.base.after[1]), `fill:var(--surface);stroke:${color};stroke-width:1.5`, 4);
+    svg += mark(X(k.after[1]), `fill:${color};stroke:var(--surface);stroke-width:2`, 5);
+    if (m.r > 100) svg += `<text x="${m.l + pw + 12}" y="${y + 4}" class="lbl">${fmtPct(k.before[1])} → ${fmtPct(k.after[1])}</text>`;
+    svg += '</g>';
+  });
+  box.innerHTML = svg + '</svg>' + (b ? '<div class="legend"><span class="m">hollow mark: baseline median</span></div>' : '');
+  $('#kindsTable').innerHTML = tableHTML(
+    [{ label: 'Kind' }, { label: 'Pairs', num: 1 }, { label: 'Normal median', num: 1 }, { label: 'Boosted 25%', num: 1 },
+     { label: 'Boosted median', num: 1 }, { label: 'Boosted 75%', num: 1 }, { label: 'Kills to see it (median)', num: 1 }],
+    kinds.map(k => [k.label, fmtNum(k.rows), fmtPct(k.before[1]), fmtPct(k.after[0]), fmtPct(k.after[1]), fmtPct(k.after[2]), fmtOneIn(k.after[1])]));
+}
+
+function renderHeat() {
+  const box = $('#heatChart'), select = $('#heatKind');
+  const kinds = select.value === 'all' ? [0, 1, 2, 3, 4, 5] : select.value.split(',').map(Number);
+  const cells = new Float64Array(HM_N * HM_N);
+  for (const kind of kinds) summary.heat[kind].forEach((v, i) => { cells[i] += v; });
+  let max = 0;
+  for (const v of cells) max = Math.max(max, v);
+  const size = Math.min(560, Math.max(260, box.clientWidth - 80));
+  const m = { l: 70, t: 10, b: 40, r: 10 };
+  const W = m.l + size + m.r, H = m.t + size + m.b, cell = size / HM_N;
+  const X = makeScale(Math.pow(10, HM_LO), Math.pow(10, HM_HI), m.l, m.l + size, true);
+  const Y = makeScale(Math.pow(10, HM_LO), Math.pow(10, HM_HI), m.t + size, m.t, true);
+  let svg = `<svg width="${W}" height="${H}">`;
+  const ticks = [];
+  for (let k = HM_LO; k <= 0; k++) if (k <= HM_HI) ticks.push(Math.pow(10, k));
+  for (const v of ticks) {
+    svg += `<line x1="${X(v)}" x2="${X(v)}" y1="${m.t}" y2="${m.t + size}" style="stroke:var(--grid)"/><text x="${X(v)}" y="${m.t + size + 16}" text-anchor="middle">${fmtPct(v)}</text>`;
+    svg += `<line x1="${m.l}" x2="${m.l + size}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--grid)"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${fmtPct(v)}</text>`;
+  }
+  const edge = b => Math.pow(10, HM_LO + b / HM_N * (HM_HI - HM_LO));
+  for (let i = 0; i < HM_N; i++) for (let j = 0; j < HM_N; j++) {
+    const v = cells[i * HM_N + j];
+    if (!v) continue;
+    const opacity = 0.12 + 0.88 * Math.log1p(v) / Math.log1p(max);
+    const tipHtml = `<div class="t">${fmtNum(v)} creature and item pairs</div>` + tipRow('Normal', `${fmtPct(edge(i))} to ${fmtPct(edge(i + 1))}`) +
+      tipRow('Boosted', `${fmtPct(edge(j))} to ${fmtPct(edge(j + 1))}`);
+    svg += `<rect x="${(m.l + i * cell).toFixed(1)}" y="${(m.t + size - (j + 1) * cell).toFixed(1)}" width="${(cell + 0.3).toFixed(1)}" height="${(cell + 0.3).toFixed(1)}" style="fill:var(--seq);opacity:${opacity.toFixed(3)}" data-tip="${esc(tipHtml)}"/>`;
+  }
+  svg += `<line x1="${m.l}" y1="${m.t + size}" x2="${m.l + size}" y2="${m.t}" style="stroke:var(--ink2);stroke-width:1"/>`;
+  const cap = S.maxItemChance / 100;
+  if (cap < Math.pow(10, HM_HI)) svg += `<line x1="${m.l}" x2="${m.l + size}" y1="${Y(cap)}" y2="${Y(cap)}" style="stroke:var(--ink2)"/><text class="lbl" x="${m.l + 4}" y="${Y(cap) - 5}">MaxItemChance</text>`;
+  svg += `<text class="lbl" x="${m.l + size - 4}" y="${m.t + size - 8}" text-anchor="end">unchanged (diagonal)</text>`;
+  svg += `<text x="${m.l + size}" y="${H - 4}" text-anchor="end">normal chance →</text>`;
+  svg += `<text x="12" y="${m.t + size / 2}" transform="rotate(-90 12 ${m.t + size / 2})" text-anchor="middle">boosted chance →</text>`;
+  box.innerHTML = svg + '</svg>';
+}
+
+function renderAggregates() {
+  renderTiles();
+  renderLevels();
+  renderStatus();
+  renderMix();
+  renderKinds();
+  renderHeat();
+}
+
+let computeTimer = null;
+function scheduleCompute() {
+  document.body.classList.add('busy');
+  clearTimeout(computeTimer);
+  computeTimer = setTimeout(() => {
+    const start = performance.now();
+    summary = computeAll(S, players, false);
+    lastMs = performance.now() - start;
+    renderAggregates();
+    document.body.classList.remove('busy');
+  }, 40);
+}
+
+function settingsChanged() {
+  syncControls();
+  $('#conf').value = confText(S);
+  renderCreature();
+  scheduleCompute();
+  markSweepStale();
+}
+
+// ---------------------------------------------------------------------------
+// Creature view
+// ---------------------------------------------------------------------------
+const CREATURES = DATA.creatures; // [name, entry, level, loot row]
+const CREATURE_LOWER = CREATURES.map(c => c[0].toLowerCase());
+const STAGES = ['Normal', 'Compress', 'Weight', 'Scale', 'Cap'];
+const STAGE_KEYS = ['c', 'compressed', 'weighted', 'scaled', 'boosted'];
+let itemSort = { key: 'boosted', dir: -1 }, showAllItems = false, detail = null, chartState = null;
+
+function selectCreature(index) {
+  selected = index;
+  const [name, entry, level] = CREATURES[index];
+  $('#creatureInput').value = `${name} (${entry})`;
+  $('#creatureList').hidden = true;
+  showAllItems = false;
+  renderCreature();
+}
+
+function buildCreatureSearch() {
+  const input = $('#creatureInput'), list = $('#creatureList');
+  let matches = [], highlight = 0;
+  const draw = () => {
+    list.innerHTML = matches.map((index, i) => {
+      const [name, entry, level] = CREATURES[index];
+      return `<div data-index="${index}" class="${i === highlight ? 'hl' : ''}">${esc(name)} <span class="sub">level ${level}, entry ${entry}</span></div>`;
+    }).join('') || '<div class="sub">No creature with rare items matches</div>';
+    list.hidden = false;
+  };
+  input.addEventListener('input', () => {
+    const query = input.value.trim().toLowerCase();
+    if (!query) { list.hidden = true; return; }
+    const starts = [], contains = [];
+    for (let i = 0; i < CREATURES.length && starts.length < 60; i++) {
+      if (String(CREATURES[i][1]) === query || CREATURE_LOWER[i].startsWith(query)) starts.push(i);
+      else if (contains.length < 60 && CREATURE_LOWER[i].includes(query)) contains.push(i);
+    }
+    matches = starts.concat(contains).slice(0, 40);
+    highlight = 0;
+    draw();
+  });
+  input.addEventListener('keydown', event => {
+    if (list.hidden) return;
+    if (event.key === 'ArrowDown') { highlight = Math.min(matches.length - 1, highlight + 1); draw(); event.preventDefault(); }
+    else if (event.key === 'ArrowUp') { highlight = Math.max(0, highlight - 1); draw(); event.preventDefault(); }
+    else if (event.key === 'Enter' && matches.length) selectCreature(matches[highlight]);
+    else if (event.key === 'Escape') list.hidden = true;
+  });
+  input.addEventListener('focus', () => input.select());
+  list.addEventListener('mousedown', event => {
+    const row = event.target.closest('[data-index]');
+    if (row) selectCreature(+row.dataset.index);
+  });
+  input.addEventListener('blur', () => setTimeout(() => { list.hidden = true; }, 150));
+  $('#randomCreature').addEventListener('click', () => {
+    const K = prepare(S);
+    for (let tries = 0; tries < 200; tries++) {
+      const index = Math.floor(Math.random() * CREATURES.length);
+      boostCore(LOOT_T[CREATURES[index][3]], K);
+      if (B.status === ST_HIT || B.status === ST_CAP || tries === 199) { selectCreature(index); return; }
+    }
+  });
+}
+
+function stageText(d) {
+  const settings = `MaxItemChance ${fmtPct(d.K.maxC)}, MaxCombinedChance ${fmtPct(d.K.target)}`;
+  if (d.status === ST_NONE) return 'No items of this creature count as rare with these settings.';
+  const n = d.items.length;
+  if (d.status === ST_ABOVE) {
+    return `<b>Already above target.</b> Its ${n} rare items together drop ${fmtPct(d.orig)} of the time, which is at least MaxCombinedChance (${fmtPct(d.K.target)}), so this creature gets no world drops. The steps don't apply.`;
+  }
+  if (d.status === ST_NOBOOST && d.scale === 0) return '<b>No boost:</b> every item has a weight of 0.';
+  switch (stage) {
+    case 1: return `<b>1. Normal chances.</b> ${n} rare items (rarer than MaxItemChance, green or better, gear, recipes, bags, mounts or pets). ` +
+      `One of them drops on ${fmtPct(d.orig)} of kills. Their geometric mean is ${fmtPct(d.mean)}.` +
+      (d.excluded ? ` ${d.excluded} other items in this table aren't rare with these settings.` : '');
+    case 2: return `<b>2. Compress</b> (CompressionRatio ${S.compression}): each chance is pulled toward the geometric mean, <code>chance^${+(1 - S.compression).toFixed(2)} × mean^${S.compression}</code>. ` +
+      `On this log scale the spread shrinks to ${Math.round((1 - S.compression) * 100)}% of its width around the mean line. These are only shapes, not drop chances yet.`;
+    case 3: return `<b>3. Weight</b>: multiplied by the quality weight (green ${S.qw0}, blue ${S.qw1}, epic+ ${S.qw2})` +
+      `${d.items.some(i => I_CLS[i.it] === ITEM_CLASS_RECIPE) ? `, and recipes (diamonds) also by RecipeWeight ${S.recipeWeight}` : ''}.`;
+    case 4: return d.status === ST_CAP
+      ? `<b>4. Scale</b>: everything is multiplied by ×${fmtNum(d.scale, d.scale < 10 ? 2 : 0)}, enough to put every item at MaxItemChance or above. Even then one of them only drops ${fmtPct(d.final)} of the time, short of MaxCombinedChance ${fmtPct(d.K.target)}.`
+      : `<b>4. Scale</b>: everything is multiplied by one number, ×${fmtNum(d.scale, d.scale < 10 ? 2 : 0)}, found by search so that after step 5 one of the items drops exactly MaxCombinedChance (${fmtPct(d.K.target)}) of the time.`;
+    default: return `<b>5. Cap</b>: each item is kept between its normal chance and MaxItemChance (${fmtPct(d.K.maxC)}). One of them now drops ${fmtPct(d.final)} of the time. ` +
+      `The normal roll still gives the normal chance, so the module's extra roll adds an item on <b>${fmtPct(d.extra)}</b> of kills (${fmtOneIn(d.extra)}), before the wants check.`;
+  }
+}
+
+function renderCreature() {
+  if (selected == null) return;
+  const [name, entry, level, lootRow] = CREATURES[selected];
+  const t = LOOT_T[lootRow];
+  detail = tableDetail(t, S, level);
+  const d = detail;
+  $('#stages').innerHTML = STAGES.map((label, i) => `<button data-stage="${i + 1}" class="${stage === i + 1 ? 'on' : ''}">${i + 1}. ${label}</button>`).join('');
+  $('#stageText').innerHTML = stageText(d);
+  renderStageChart();
+  renderFacts(name, entry, level, lootRow);
+  renderItemTable();
+}
+
+function renderStageChart() {
+  const box = $('#stageChart'), d = detail;
+  const items = d.items;
+  $('#stageLegend').innerHTML = Q_LABEL.map((label, q) => `<span>${swatch(Q_COLOR[q])}${label}</span>`).join('') +
+    `<span>${swatch('var(--muted)')}normal chance</span><span>◆ recipe, ● other</span>` + (baseline ? '<span>○ baseline, step 5</span>' : '');
+  if (!items.length) { box.innerHTML = '<p class="sub" style="padding:40px 0">No rare items.</p>'; chartState = null; return; }
+
+  const W = Math.max(300, box.clientWidth), H = 360, m = { l: 64, r: 14, t: 12, b: 30 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const all = [];
+  for (const i of items) for (const key of STAGE_KEYS) if (i[key] > 0) all.push(i[key]);
+  all.push(d.K.maxC);
+  let base = null;
+  if (baseline) {
+    base = tableDetail(LOOT_T[CREATURES[selected][3]], baseline.S, d.level);
+    for (const i of base.items) all.push(i.boosted);
+  }
+  const y0 = Math.min(...all) / 1.5, y1 = Math.min(1, Math.max(...all) * 1.5);
+  const Y = makeScale(y0, y1, m.t + ph, m.t, true);
+  const n = items.length, X = k => m.l + (n === 1 ? pw / 2 : (k + 0.5) / n * pw);
+  const r = Math.max(2.5, Math.min(5.5, pw / n * 0.42));
+  const clampY = v => Math.min(m.t + ph, Math.max(m.t, Y(Math.max(v, y0))));
+
+  let svg = `<svg width="${W}" height="${H}">`;
+  for (const v of logTicks(y0, y1)) svg += `<line x1="${m.l}" x2="${m.l + pw}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--grid)"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${fmtPct(v)}</text>`;
+  svg += `<line x1="${m.l}" x2="${m.l + pw}" y1="${m.t + ph}" y2="${m.t + ph}" style="stroke:var(--axis)"/>`;
+  svg += `<text x="${m.l}" y="${H - 8}">rarest</text><text x="${m.l + pw}" y="${H - 8}" text-anchor="end">most common</text>`;
+  svg += `<text x="${m.l + pw / 2}" y="${H - 8}" text-anchor="middle">${n} rare items, by normal chance</text>`;
+  svg += `<g class="refline" data-show="1,2"><line x1="${m.l}" x2="${m.l + pw}" y1="${clampY(d.mean)}" y2="${clampY(d.mean)}" style="stroke:var(--ink2);stroke-width:1"/><text class="lbl" x="${m.l + 4}" y="${clampY(d.mean) - 5}">geometric mean</text></g>`;
+  svg += `<line x1="${m.l}" x2="${m.l + pw}" y1="${Y(d.K.maxC)}" y2="${Y(d.K.maxC)}" style="stroke:var(--ink2);stroke-width:1"/><text class="lbl" x="${m.l + pw - 4}" y="${Y(d.K.maxC) - 5}" text-anchor="end">MaxItemChance ${fmtPct(d.K.maxC)}</text>`;
+  svg += '<g>' + items.map((i, k) => `<circle cx="${X(k).toFixed(1)}" cy="${clampY(i.c).toFixed(1)}" r="${Math.max(1.5, r * 0.55).toFixed(1)}" style="fill:var(--muted);opacity:.6"/>`).join('') + '</g>';
+  if (base) {
+    const baseById = new Map(base.items.map(i => [i.it, i.boosted]));
+    svg += `<g class="refline" data-show="5">` + items.map((i, k) => baseById.has(i.it)
+      ? `<circle cx="${X(k).toFixed(1)}" cy="${clampY(baseById.get(i.it)).toFixed(1)}" r="${r.toFixed(1)}" style="fill:none;stroke:var(--ink2);stroke-width:1;opacity:.7"/>` : '').join('') + '</g>';
+  }
+  svg += '<g>' + items.map((i, k) => {
+    const color = Q_COLOR[qslot(I_Q[i.it])];
+    const shape = I_CLS[i.it] === ITEM_CLASS_RECIPE
+      ? `<path d="M0,${-r - 1}L${r + 1},0L0,${r + 1}L${-r - 1},0Z" style="fill:${color};stroke:var(--surface);stroke-width:1"/>`
+      : `<circle r="${r}" style="fill:${color};stroke:var(--surface);stroke-width:1"/>`;
+    return `<g class="dot" data-k="${k}" style="transform:translate(${X(k).toFixed(1)}px,${clampY(i[STAGE_KEYS[stage - 1]]).toFixed(1)}px)">${shape}</g>`;
+  }).join('') + '</g>';
+  svg += `<line class="cross" x1="0" x2="0" y1="${m.t}" y2="${m.t + ph}" style="stroke:var(--axis);visibility:hidden"/>`;
+  svg += `<rect class="hit" data-own-tip="1" x="${m.l}" y="${m.t}" width="${pw}" height="${ph}" style="fill:transparent"/></svg>`;
+  box.innerHTML = svg;
+  chartState = { X, clampY, n };
+  updateStageMarks();
+
+  const hit = $('.hit', box), cross = $('.cross', box);
+  hit.addEventListener('mousemove', event => {
+    const px = event.clientX - hit.getBoundingClientRect().left;
+    const k = Math.min(n - 1, Math.max(0, Math.floor(px / pw * n)));
+    const i = items[k];
+    cross.setAttribute('x1', X(k)); cross.setAttribute('x2', X(k)); cross.style.visibility = 'visible';
+    const wantedBy = players.filter(p => p.mask[i.it] & levelBit(d.level)).map(p => swatch(`var(--p${p.slot})`) + esc(p.cls)).join(' ') || 'nobody';
+    showTip(`<div class="t">${esc(I_NAME[i.it])}</div><div class="m">${QUALITY[I_Q[i.it]]} ${TYPE_NAMES[I_CLS[i.it]] || 'item'}, item level ${I_ILVL[i.it]}, item ${I_ID[i.it]}</div>` +
+      tipRow('1. Normal', `${fmtPct(i.c)} (${fmtOneIn(i.c)})`) + tipRow('2. Compressed', fmtPct(i.compressed)) +
+      tipRow('3. Weighted', fmtPct(i.weighted)) + tipRow('4. Scaled', fmtPct(i.scaled)) +
+      tipRow('5. Boosted', `${fmtPct(i.boosted)} (${fmtOneIn(i.boosted)})`) + tipRow('Extra roll', fmtPct(i.extra)) +
+      `<div class="r"><span>Wanted by</span><span>${wantedBy}</span></div>`, event.clientX, event.clientY);
+  });
+  hit.addEventListener('mouseleave', () => { cross.style.visibility = 'hidden'; hideTip(); });
+}
+
+function updateStageMarks() {
+  const box = $('#stageChart');
+  document.querySelectorAll('#stages button').forEach(b => b.classList.toggle('on', +b.dataset.stage === stage));
+  $('#stageText').innerHTML = stageText(detail);
+  if (!chartState) return;
+  const key = STAGE_KEYS[stage - 1];
+  box.querySelectorAll('.dot').forEach(g => {
+    const k = +g.dataset.k;
+    g.style.transform = `translate(${chartState.X(k).toFixed(1)}px,${chartState.clampY(detail.items[k][key]).toFixed(1)}px)`;
+  });
+  box.querySelectorAll('.refline').forEach(g => { g.style.visibility = g.dataset.show.split(',').includes(String(stage)) ? 'visible' : 'hidden'; });
+}
+
+function renderFacts(name, entry, level, lootRow) {
+  const d = detail, lootId = DATA.loot.ids[lootRow];
+  const sharing = CREATURES.filter(c => c[3] === lootRow).length;
+  const statusText = { [ST_NONE]: 'no rare items', [ST_ABOVE]: 'already above target', [ST_NOBOOST]: 'no boost', [ST_HIT]: 'hits target', [ST_CAP]: 'every item capped' }[d.status];
+  const shares = [0, 0, 0];
+  let recipeShare = 0, total = 0;
+  for (const i of d.items) { shares[qslot(I_Q[i.it])] += i.extra; total += i.extra; if (I_CLS[i.it] === ITEM_CLASS_RECIPE) recipeShare += i.extra; }
+  const mixBar = total ? `<div class="bar">${shares.map((v, q) => v > 0 ? `<div style="flex:${v / total} 1 0;background:${Q_COLOR[q]}" data-tip="${esc(`<div class="t">${Q_LABEL[q]}</div>${fmtShare(v / total)} of this creature's extra items`)}">${v / total > 0.15 ? fmtShare(v / total) : ''}</div>` : '').join('')}</div><div class="sub">Recipes ${fmtShare(recipeShare / total)} of extra items</div>` : '';
+  $('#facts').innerHTML = `
+    <div><b>${esc(name)}</b><div class="sub">entry ${entry}, level ${level}, loot id ${lootId}${sharing > 1 ? `, table shared by ${sharing} creatures` : ''}</div></div>
+    <dl>
+      <dt>Rare items</dt><dd>${d.items.length}</dd>
+      <dt>Result</dt><dd>${statusText}</dd>
+      <dt>Rare drop, normal</dt><dd>${fmtPct(d.orig)}</dd>
+      <dt>Rare drop, boosted</dt><dd>${fmtPct(d.final)}</dd>
+      <dt>Extra item per kill</dt><dd><b>${fmtPct(d.extra)}</b></dd>
+      <dt></dt><dd class="sub">${fmtOneIn(d.extra)} kills</dd>
+    </dl>
+    ${mixBar}
+    <div style="display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--grid);padding-top:6px">
+      <div class="sub">After the wants check (level ${level})</div>
+      ${players.map((p, i) => `<div class="pl">${swatch(`var(--p${p.slot})`)}<span style="flex:1">${esc(p.cls)} <span class="sub">wants ${d.players[i].wanted}</span></span><b>${fmtPct(d.players[i].extra)}</b></div><div class="sub" style="text-align:right;margin-top:-4px">${fmtOneIn(d.players[i].extra)} kills</div>`).join('')}
+    </div>`;
+}
+
+function renderItemTable() {
+  const d = detail, box = $('#itemTable');
+  if (!d.items.length) { box.innerHTML = ''; return; }
+  const columns = [
+    { key: 'name', label: 'Item', get: i => I_NAME[i.it] },
+    { key: 'quality', label: 'Quality', get: i => I_Q[i.it] },
+    { key: 'type', label: 'Type', get: i => TYPE_NAMES[I_CLS[i.it]] || '' },
+    { key: 'ilvl', label: 'iLvl', num: 1, get: i => I_ILVL[i.it] },
+    { key: 'c', label: 'Normal', num: 1, get: i => i.c },
+    { key: 'boosted', label: 'Boosted', num: 1, get: i => i.boosted },
+    { key: 'factor', label: 'Boost', num: 1, get: i => i.boosted / i.c },
+    { key: 'extra', label: 'Extra roll', num: 1, get: i => i.extra },
+    { key: 'wanted', label: 'Wanted by', get: i => players.filter(p => p.mask[i.it] & levelBit(d.level)).length },
+  ];
+  const col = columns.find(c => c.key === itemSort.key);
+  const sorted = [...d.items].sort((a, b) => {
+    const va = col.get(a), vb = col.get(b);
+    return (typeof va === 'string' ? va.localeCompare(vb) : va - vb) * itemSort.dir;
+  });
+  const shown = showAllItems ? sorted : sorted.slice(0, 25);
+  box.innerHTML = `<table><thead><tr>${columns.map(c => `<th data-sort="${c.key}" class="${c.num ? 'num' : ''}">${c.label}${c.key === itemSort.key ? (itemSort.dir < 0 ? ' ↓' : ' ↑') : ''}</th>`).join('')}</tr></thead><tbody>` +
+    shown.map(i => `<tr>
+      <td>${esc(I_NAME[i.it])}</td>
+      <td>${swatch(Q_COLOR[qslot(I_Q[i.it])])}${QUALITY[I_Q[i.it]]}</td>
+      <td>${TYPE_NAMES[I_CLS[i.it]] || ''}</td>
+      <td class="num">${I_ILVL[i.it]}</td>
+      <td class="num">${fmtPct(i.c)}</td>
+      <td class="num">${fmtPct(i.boosted)}</td>
+      <td class="num">×${fmtNum(i.boosted / i.c, i.boosted / i.c < 10 ? 1 : 0)}</td>
+      <td class="num">${fmtPct(i.extra)}</td>
+      <td>${players.filter(p => p.mask[i.it] & levelBit(d.level)).map(p => swatch(`var(--p${p.slot})`) + esc(p.cls)).join(' ')}</td>
+    </tr>`).join('') + '</tbody></table>' +
+    (d.items.length > 25 ? `<button class="linkbtn" id="toggleItems" style="margin-top:4px">${showAllItems ? 'Show fewer' : `Show all ${d.items.length}`}</button>` : '');
+}
+
+// ---------------------------------------------------------------------------
+// Sweep
+// ---------------------------------------------------------------------------
+const SWEEPS = {
+  maxItemChance: { label: 'MaxItemChance', values: [0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25], fmt: v => v + '%' },
+  maxCombinedChance: { label: 'MaxCombinedChance', values: [2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 25, 30, 40, 50], fmt: v => v + '%' },
+  compression: { label: 'CompressionRatio', values: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1], fmt: v => String(v) },
+  qw0: { label: 'QualityWeights: green', values: [0, 0.25, 0.5, 1, 2, 3, 4, 6, 8, 10], fmt: v => String(v) },
+  qw1: { label: 'QualityWeights: blue', values: [0, 0.5, 1, 2, 3, 4, 6, 8, 10, 15, 20], fmt: v => String(v) },
+  qw2: { label: 'QualityWeights: epic+', values: [0, 0.5, 1, 2, 3, 4, 6, 8, 10, 15, 20], fmt: v => String(v) },
+  recipeWeight: { label: 'RecipeWeight', values: [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3], fmt: v => String(v) },
+};
+let sweep = null, sweepRunning = false;
+
+const sweepSig = key => JSON.stringify({ ...S, [key]: null }) + playersSig();
+
+function markSweepStale() {
+  if (!sweep) return;
+  const stale = sweep.sig !== sweepSig(sweep.key);
+  $('#sweepStatus').textContent = stale ? 'Settings or players changed since this sweep: run it again to update.' : '';
+  if (!stale) renderSweep();
+  else $('#sweepCharts').style.opacity = 0.5;
+}
+
+function runSweep() {
+  if (sweepRunning) return;
+  const key = $('#sweepKey').value, def = SWEEPS[key];
+  const results = [];
+  const snapshot = { ...S }, sig = sweepSig(key);
+  const snapshotPlayers = players.map(p => ({ ...p }));
+  sweepRunning = true;
+  $('#sweepRun').disabled = true;
+  const step = () => {
+    const i = results.length;
+    if (i >= def.values.length) {
+      sweep = { key, values: def.values, results, sig, players: snapshotPlayers };
+      sweepRunning = false;
+      $('#sweepRun').disabled = false;
+      $('#sweepStatus').textContent = '';
+      renderSweep();
+      markSweepStale();
+      return;
+    }
+    $('#sweepStatus').textContent = `Working out ${def.label} = ${def.fmt(def.values[i])} (${i + 1} of ${def.values.length})...`;
+    setTimeout(() => {
+      results.push(computeAll({ ...snapshot, [key]: def.values[i] }, snapshotPlayers, true));
+      step();
+    }, 16);
+  };
+  step();
+}
+
+function renderSweep() {
+  const box = $('#sweepCharts');
+  box.style.opacity = 1;
+  if (!sweep) { box.innerHTML = '<p class="sub">Pick a setting and run the sweep. It takes a few seconds.</p>'; return; }
+  const def = SWEEPS[sweep.key], xs = sweep.values, R = sweep.results, ps = sweep.players;
+  const marker = S[sweep.key];
+  box.innerHTML = ['a', 'b', 'c', 'd', 'e'].map(id => `<div class="chart" id="sweep-${id}"></div>`).join('');
+  const common = { x: xs, xFormat: def.fmt, xName: def.label, marker: marker >= Math.min(...xs) && marker <= Math.max(...xs) ? marker : null, height: 220 };
+  lineChart($('#sweep-a'), { ...common, title: 'Extra item per kill (median)', yFormat: fmtPct,
+    series: [{ name: 'Any rare item', color: 'var(--p0)', values: R.map(r => r.medExtra) }]
+      .concat(ps.map((p, i) => ({ name: p.cls, color: `var(--p${p.slot})`, values: R.map(r => r.medPlayers[i]) }))) });
+  lineChart($('#sweep-b'), { ...common, title: 'Extra items by quality (any rare item)', yFormat: fmtShare,
+    series: Q_LABEL.map((label, q) => ({ name: label, color: Q_COLOR[q], values: R.map(r => r.mix[0].q[q]) })) });
+  lineChart($('#sweep-c'), { ...common, title: 'Recipes among extra items', yFormat: fmtShare,
+    series: [{ name: 'Any rare item', color: 'var(--p0)', values: R.map(r => r.mix[0].recipe) }]
+      .concat(ps.map((p, i) => ({ name: p.cls, color: `var(--p${p.slot})`, values: R.map(r => r.mix[i + 1].recipe) }))) });
+  lineChart($('#sweep-d'), { ...common, title: 'Chance of one specific gear item (median, boosted)', yFormat: fmtPct, log: true,
+    series: [0, 1, 2].map(q => ({ name: Q_LABEL[q], color: Q_COLOR[q], values: R.map(r => r.kinds[q].rows ? r.kinds[q].after[1] : null) })) });
+  lineChart($('#sweep-e'), { ...common, title: 'How loot tables end up', yFormat: fmtShare,
+    series: [[ST_HIT, 'Hits target', 'var(--s-hit)'], [ST_CAP, 'Every item capped', 'var(--s-cap)'], [ST_ABOVE, 'Already above', 'var(--s-above)']]
+      .map(([st, name, color]) => ({ name, color, values: R.map(r => r.statusTotals[st] / (r.tablesWithRare || 1)) })) });
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+function init() {
+  renderSource();
+  buildControls();
+  syncControls();
+  $('#conf').value = confText(S);
+  renderPlayers();
+
+  $('#reset').addEventListener('click', () => { Object.assign(S, FROM_CONF); S.maxItemChance = Math.min(S.maxItemChance, DATA.exportMaxItemChance); settingsChanged(); });
+  $('#pin').addEventListener('click', () => {
+    baseline = { S: { ...S }, summary };
+    $('#unpin').hidden = false;
+    $('#baselineText').innerHTML = 'Baseline:<br><code style="font-size:11px;white-space:pre-wrap">' + esc(confText(S).replace(/SoloBossLoot\.WorldDrop\./g, '')) + '</code>';
+    renderCreature(); renderAggregates();
+  });
+  $('#unpin').addEventListener('click', () => {
+    baseline = null;
+    $('#unpin').hidden = true;
+    $('#baselineText').textContent = 'Pin the current settings to compare against them: charts show the baseline faded.';
+    renderCreature(); renderAggregates();
+  });
+  $('#copyConf').addEventListener('click', () => {
+    navigator.clipboard?.writeText($('#conf').value).then(() => { $('#copyConf').textContent = 'Copied'; setTimeout(() => { $('#copyConf').textContent = 'Copy'; }, 1200); },
+      () => { $('#conf').select(); });
+  });
+
+  $('#players').addEventListener('change', event => {
+    const i = +event.target.dataset.i, p = players[i];
+    if (!p) return;
+    if (event.target.tagName === 'SELECT') p.cls = event.target.value;
+    else if (event.target.dataset.prof) event.target.checked ? p.prof.add(event.target.dataset.prof) : p.prof.delete(event.target.dataset.prof);
+    refreshPlayer(p);
+    playersChanged();
+  });
+  $('#players').addEventListener('click', event => {
+    const remove = event.target.dataset.remove;
+    if (remove == null) return;
+    players.splice(+remove, 1);
+    playersChanged();
+  });
+  $('#addPlayer').addEventListener('click', () => {
+    if (players.length >= 3) return;
+    const slot = [1, 2, 3].find(s => !players.some(p => p.slot === s));
+    const p = { cls: 'mage', prof: new Set(['tailoring', 'enchanting']), slot };
+    refreshPlayer(p);
+    players.push(p);
+    playersChanged();
+  });
+
+  $('#stages').addEventListener('click', event => {
+    const b = event.target.closest('[data-stage]');
+    if (!b) return;
+    stopPlay();
+    stage = +b.dataset.stage;
+    updateStageMarks();
+  });
+  let playTimer = null;
+  const stopPlay = () => { clearInterval(playTimer); playTimer = null; $('#play').textContent = 'Play'; };
+  $('#play').addEventListener('click', () => {
+    if (playTimer) { stopPlay(); return; }
+    stage = 1; updateStageMarks();
+    $('#play').textContent = 'Stop';
+    playTimer = setInterval(() => {
+      if (stage >= 5) { stopPlay(); return; }
+      stage++; updateStageMarks();
+    }, 1900);
+  });
+  $('#itemTable').addEventListener('click', event => {
+    const th = event.target.closest('[data-sort]');
+    if (th) {
+      itemSort = { key: th.dataset.sort, dir: itemSort.key === th.dataset.sort ? -itemSort.dir : (['name', 'type'].includes(th.dataset.sort) ? 1 : -1) };
+      renderItemTable();
+    } else if (event.target.id === 'toggleItems') { showAllItems = !showAllItems; renderItemTable(); }
+  });
+
+  $('#heatKind').innerHTML = '<option value="all">every rare item</option><option value="0,3">green</option><option value="1,4">blue</option><option value="2,5">epic+</option>' +
+    '<option value="0,1,2">gear only</option><option value="3,4,5">recipes only</option>';
+  $('#heatKind').addEventListener('change', renderHeat);
+
+  $('#sweepKey').innerHTML = Object.entries(SWEEPS).map(([key, def]) => `<option value="${key}">${def.label}</option>`).join('');
+  $('#sweepRun').addEventListener('click', runSweep);
+  renderSweep();
+
+  buildCreatureSearch();
+  const start = CREATURE_LOWER.indexOf('defias pillager');
+  selectCreature(start >= 0 ? start : 0);
+
+  let resizeTimer = null, lastWidth = window.innerWidth;
+  window.addEventListener('resize', () => {
+    if (window.innerWidth === lastWidth) return;
+    lastWidth = window.innerWidth;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { renderCreature(); if (summary) renderAggregates(); if (sweep && sweep.sig === sweepSig(sweep.key)) renderSweep(); }, 150);
+  });
+
+  summary = computeAll(S, players, false);
+  renderAggregates();
+}
+
+init();
+</script>
+</body>
+</html>

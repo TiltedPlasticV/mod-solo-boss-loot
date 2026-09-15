@@ -27,6 +27,8 @@ The boost is worked out from your world database at startup. If you raised drop 
 
 To try world drop settings without starting the server, run `apps/world_drop_sim.py` (Python 3.8 or newer). It reads the world database SQL that ships with AzerothCore and your config, and shows how often each creature drops rare items before and after the boost. Run it with `--help` for the options.
 
+To see what each setting does, run `apps/world_drop_viz.py` and open the `apps/world_drop_viz.html` page it writes. It has sliders for the settings and redraws the charts as you move them: one creature's rare items going through each step of the boost, extra item chances by level, which qualities and recipes drop, and a sweep of one setting across its range. It takes the same options as the simulator.
+
 ## Installation
 
 1. Clone this repository into your AzerothCore `modules` folder. The folder must be named `mod-solo-boss-loot`.
