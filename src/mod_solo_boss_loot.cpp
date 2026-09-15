@@ -66,7 +66,7 @@ namespace
 
     struct ModuleConfig
     {
-        bool enabled = true;
+        bool bossLootEnabled = true;
         bool skipOwnedItems = true;
         uint32 sharedPoolThreshold = 3;
 
@@ -95,7 +95,7 @@ namespace
 
     void LoadConfig()
     {
-        config.enabled             = sConfigMgr->GetOption<bool>("SoloBossLoot.Enable", true);
+        config.bossLootEnabled     = sConfigMgr->GetOption<bool>("SoloBossLoot.BossLoot.Enable", true);
         config.skipOwnedItems      = sConfigMgr->GetOption<bool>("SoloBossLoot.SkipOwnedItems", true);
         config.sharedPoolThreshold = sConfigMgr->GetOption<uint32>("SoloBossLoot.SharedPoolThreshold", 3);
 
@@ -129,10 +129,10 @@ namespace
                 "using \"1 3 6\"", weights);
         }
 
-        LOG_DEBUG(LOG_NAME, "SoloBossLoot: Settings: Enable {}, SkipOwnedItems {}, SharedPoolThreshold {}, WorldDrop.Enable {}, "
+        LOG_DEBUG(LOG_NAME, "SoloBossLoot: Settings: BossLoot.Enable {}, SkipOwnedItems {}, SharedPoolThreshold {}, WorldDrop.Enable {}, "
             "WorldDrop.MinQuality {}, WorldDrop.MaxItemLevel {}, WorldDrop.MaxItemChance {}, WorldDrop.MaxCombinedChance {}, "
             "WorldDrop.CompressionRatio {}, WorldDrop.QualityWeights \"{} {} {}\", WorldDrop.RecipeWeight {}",
-            config.enabled, config.skipOwnedItems, config.sharedPoolThreshold, config.worldDropEnabled,
+            config.bossLootEnabled, config.skipOwnedItems, config.sharedPoolThreshold, config.worldDropEnabled,
             config.worldDropMinQuality, config.worldDropMaxItemLevel, config.worldDropMaxItemChance, config.worldDropMaxCombinedChance,
             config.worldDropCompressionRatio, config.worldDropQualityWeights[0], config.worldDropQualityWeights[1],
             config.worldDropQualityWeights[2], config.worldDropRecipeWeight);
@@ -687,98 +687,15 @@ namespace
             cache.worldDropLoot.size(), uniqueTables.size(), itemCount, GetMSTimeDiffToNow(startTime));
     }
 
-    std::shared_ptr<LootCache const> BuildLootCache()
+    // Works out which items belong to each boss loot table (boss creatures and boss chests)
+    void BuildBossLoot(LootCache& cache, std::unordered_set<uint32> const& bossCreatureLootIds,
+        std::unordered_set<uint32> const& forcedItems, std::unordered_set<uint32> const& excludedItems,
+        LootRows const& creatureRows, LootRows const& referenceRows)
     {
         uint32 const startTime = getMSTime();
-        auto cache = std::make_shared<LootCache>();
-
-        // Overrides
-        std::unordered_set<uint32> forcedItems;
-        std::unordered_set<uint32> excludedItems;
-        uint32 overrideCount = 0;
-
-        if (QueryResult result = WorldDatabase.Query("SELECT `SourceType`, `Entry`, `Mode` FROM `{}`", OVERRIDES_TABLE))
-        {
-            do
-            {
-                Field* fields = result->Fetch();
-                uint8 const sourceType = fields[0].Get<uint8>();
-                uint32 const entry     = fields[1].Get<uint32>();
-                bool const include     = fields[2].Get<uint8>() != 0;
-
-                switch (sourceType)
-                {
-                    case OVERRIDE_CREATURE:
-                        if (!sObjectMgr->GetCreatureTemplate(entry))
-                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has creature {}, which isn't in creature_template", OVERRIDES_TABLE, entry);
-                        cache->creatureOverrides[entry] = include;
-                        break;
-                    case OVERRIDE_GAMEOBJECT:
-                        if (!sObjectMgr->GetGameObjectTemplate(entry))
-                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has gameobject {}, which isn't in gameobject_template", OVERRIDES_TABLE, entry);
-                        else if (include)
-                            cache->bossChests.insert(entry);
-                        break;
-                    case OVERRIDE_ITEM:
-                        if (!sObjectMgr->GetItemTemplate(entry))
-                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has item {}, which isn't in item_template", OVERRIDES_TABLE, entry);
-                        (include ? forcedItems : excludedItems).insert(entry);
-                        break;
-                    default:
-                        LOG_ERROR(LOG_NAME, "SoloBossLoot: `{}` has unknown SourceType {} (Entry {}), skipped", OVERRIDES_TABLE, sourceType, entry);
-                        break;
-                }
-
-                ++overrideCount;
-            } while (result->NextRow());
-        }
-
-        if (!overrideCount)
-            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` is empty or missing, so boss chests get no extra loot. "
-                "Has the module's SQL been applied to the world database?", OVERRIDES_TABLE);
-
-        // Boss creature loot ids: encounter bosses and boss-flagged creatures, plus their difficulty versions
-        std::unordered_set<uint32> bossCreatureLootIds;
-        std::unordered_set<uint32> bossDifficultyEntries;
-        std::vector<std::pair<uint32, uint32>> otherCreatures; // entry, loot id
-        for (auto const& [entry, creatureTemplate] : *sObjectMgr->GetCreatureTemplates())
-        {
-            bool isBoss = creatureTemplate.HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS)
-                || (creatureTemplate.type_flags & CREATURE_TYPE_FLAG_BOSS_MOB);
-
-            if (auto itr = cache->creatureOverrides.find(entry); itr != cache->creatureOverrides.end())
-                isBoss = itr->second;
-
-            if (!isBoss)
-            {
-                if (creatureTemplate.lootid)
-                    otherCreatures.emplace_back(entry, creatureTemplate.lootid);
-                continue;
-            }
-
-            if (creatureTemplate.lootid)
-                bossCreatureLootIds.insert(creatureTemplate.lootid);
-
-            for (uint32 difficultyEntry : creatureTemplate.DifficultyEntry)
-            {
-                if (!difficultyEntry)
-                    continue;
-
-                bossDifficultyEntries.insert(difficultyEntry);
-                if (CreatureTemplate const* difficultyTemplate = sObjectMgr->GetCreatureTemplate(difficultyEntry))
-                    if (difficultyTemplate->lootid)
-                        bossCreatureLootIds.insert(difficultyTemplate->lootid);
-            }
-        }
-
-        // Every other creature's loot table gets world drops (a boss's heroic version isn't another creature)
-        std::unordered_set<uint32> worldDropLootIds;
-        for (auto const& [entry, lootId] : otherCreatures)
-            if (!bossDifficultyEntries.count(entry))
-                worldDropLootIds.insert(lootId);
 
         std::unordered_map<uint32, uint32> bossChestLootIds; // loot id -> chest entry
-        for (uint32 chestEntry : cache->bossChests)
+        for (uint32 chestEntry : cache.bossChests)
         {
             GameObjectTemplate const* chestTemplate = sObjectMgr->GetGameObjectTemplate(chestEntry);
             if (uint32 const lootId = chestTemplate->GetLootId())
@@ -788,7 +705,6 @@ namespace
         }
 
         // Anything reachable from a non-boss loot table is not boss loot
-        LootRows const referenceRows = LoadLootRows("reference_loot_template");
         std::unordered_set<uint32> nonBossReferences;
         std::unordered_set<uint32> nonBossItems;
 
@@ -812,7 +728,6 @@ namespace
 
         std::vector<BossTable> bossTables;
 
-        LootRows const creatureRows = LoadLootRows("creature_loot_template");
         for (auto const& [lootId, rows] : creatureRows)
         {
             if (bossCreatureLootIds.count(lootId))
@@ -920,16 +835,114 @@ namespace
                 continue;
 
             itemCount += items.size();
-            auto& target = bossTables[i].isChest ? cache->chestLoot : cache->creatureLoot;
+            auto& target = bossTables[i].isChest ? cache.chestLoot : cache.creatureLoot;
             target[bossTables[i].lootId] = std::move(items);
         }
 
-        LOG_INFO(LOG_NAME, "SoloBossLoot: Boss loot cache built: {} creature and {} chest loot tables, {} items, {} overrides in {} ms",
-            cache->creatureLoot.size(), cache->chestLoot.size(), itemCount, overrideCount, GetMSTimeDiffToNow(startTime));
+        LOG_INFO(LOG_NAME, "SoloBossLoot: Boss loot cache built: {} creature and {} chest loot tables, {} items in {} ms",
+            cache.creatureLoot.size(), cache.chestLoot.size(), itemCount, GetMSTimeDiffToNow(startTime));
 
         LOG_DEBUG(LOG_NAME, "SoloBossLoot: Boss loot items skipped (counted once per loot table): {} not boss-only, "
             "{} grey or white gear, {} shared pool, {} excluded by override",
             totalSkipped.notBossOnly, totalSkipped.lowQuality, totalSkipped.sharedPool, totalSkipped.excluded);
+    }
+
+    std::shared_ptr<LootCache const> BuildLootCache()
+    {
+        auto cache = std::make_shared<LootCache>();
+
+        // Overrides
+        std::unordered_set<uint32> forcedItems;
+        std::unordered_set<uint32> excludedItems;
+        uint32 overrideCount = 0;
+
+        if (QueryResult result = WorldDatabase.Query("SELECT `SourceType`, `Entry`, `Mode` FROM `{}`", OVERRIDES_TABLE))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                uint8 const sourceType = fields[0].Get<uint8>();
+                uint32 const entry     = fields[1].Get<uint32>();
+                bool const include     = fields[2].Get<uint8>() != 0;
+
+                switch (sourceType)
+                {
+                    case OVERRIDE_CREATURE:
+                        if (!sObjectMgr->GetCreatureTemplate(entry))
+                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has creature {}, which isn't in creature_template", OVERRIDES_TABLE, entry);
+                        cache->creatureOverrides[entry] = include;
+                        break;
+                    case OVERRIDE_GAMEOBJECT:
+                        if (!sObjectMgr->GetGameObjectTemplate(entry))
+                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has gameobject {}, which isn't in gameobject_template", OVERRIDES_TABLE, entry);
+                        else if (include)
+                            cache->bossChests.insert(entry);
+                        break;
+                    case OVERRIDE_ITEM:
+                        if (!sObjectMgr->GetItemTemplate(entry))
+                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has item {}, which isn't in item_template", OVERRIDES_TABLE, entry);
+                        (include ? forcedItems : excludedItems).insert(entry);
+                        break;
+                    default:
+                        LOG_ERROR(LOG_NAME, "SoloBossLoot: `{}` has unknown SourceType {} (Entry {}), skipped", OVERRIDES_TABLE, sourceType, entry);
+                        break;
+                }
+
+                ++overrideCount;
+            } while (result->NextRow());
+        }
+
+        if (!overrideCount && config.bossLootEnabled)
+            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` is empty or missing, so boss chests get no extra loot. "
+                "Has the module's SQL been applied to the world database?", OVERRIDES_TABLE);
+
+        // Boss creature loot ids: encounter bosses and boss-flagged creatures, plus their difficulty versions
+        std::unordered_set<uint32> bossCreatureLootIds;
+        std::unordered_set<uint32> bossDifficultyEntries;
+        std::vector<std::pair<uint32, uint32>> otherCreatures; // entry, loot id
+        for (auto const& [entry, creatureTemplate] : *sObjectMgr->GetCreatureTemplates())
+        {
+            bool isBoss = creatureTemplate.HasFlagsExtra(CREATURE_FLAG_EXTRA_DUNGEON_BOSS)
+                || (creatureTemplate.type_flags & CREATURE_TYPE_FLAG_BOSS_MOB);
+
+            if (auto itr = cache->creatureOverrides.find(entry); itr != cache->creatureOverrides.end())
+                isBoss = itr->second;
+
+            if (!isBoss)
+            {
+                if (creatureTemplate.lootid)
+                    otherCreatures.emplace_back(entry, creatureTemplate.lootid);
+                continue;
+            }
+
+            if (creatureTemplate.lootid)
+                bossCreatureLootIds.insert(creatureTemplate.lootid);
+
+            for (uint32 difficultyEntry : creatureTemplate.DifficultyEntry)
+            {
+                if (!difficultyEntry)
+                    continue;
+
+                bossDifficultyEntries.insert(difficultyEntry);
+                if (CreatureTemplate const* difficultyTemplate = sObjectMgr->GetCreatureTemplate(difficultyEntry))
+                    if (difficultyTemplate->lootid)
+                        bossCreatureLootIds.insert(difficultyTemplate->lootid);
+            }
+        }
+
+        // Every other creature's loot table gets world drops (a boss's heroic version isn't another creature)
+        std::unordered_set<uint32> worldDropLootIds;
+        for (auto const& [entry, lootId] : otherCreatures)
+            if (!bossDifficultyEntries.count(entry))
+                worldDropLootIds.insert(lootId);
+
+        LootRows const referenceRows = LoadLootRows("reference_loot_template");
+        LootRows const creatureRows = LoadLootRows("creature_loot_template");
+
+        if (config.bossLootEnabled)
+            BuildBossLoot(*cache, bossCreatureLootIds, forcedItems, excludedItems, creatureRows, referenceRows);
+        else
+            LOG_INFO(LOG_NAME, "SoloBossLoot: Boss loot disabled");
 
         if (config.worldDropEnabled)
             BuildWorldDropLoot(*cache, worldDropLootIds, creatureRows, referenceRows);
@@ -941,10 +954,10 @@ namespace
 
     void RebuildLootCache()
     {
-        if (!config.enabled)
+        if (!config.bossLootEnabled && !config.worldDropEnabled)
         {
             SetLootCache(nullptr);
-            LOG_INFO(LOG_NAME, "SoloBossLoot: Module disabled");
+            LOG_INFO(LOG_NAME, "SoloBossLoot: Boss loot and world drops disabled");
             return;
         }
 
@@ -1498,7 +1511,7 @@ namespace
         void OnAfterLootTemplateProcess(Loot* loot, LootTemplate const* tab, LootStore const& store, Player* lootOwner,
             bool /*personal*/, bool /*noEmptyError*/, uint16 lootMode) override
         {
-            if (!config.enabled || !loot || !tab || !lootOwner)
+            if (!loot || !tab || !lootOwner)
                 return;
 
             bool const isCreatureLoot = &store == &LootTemplates_Creature;
@@ -1513,7 +1526,7 @@ namespace
             if (!cache)
                 return;
 
-            if (map->IsDungeon())
+            if (config.bossLootEnabled && map->IsDungeon())
                 AddBossLoot(*cache, loot, tab, store, lootOwner, lootMode, map, isCreatureLoot);
 
             if (isCreatureLoot && config.worldDropEnabled)

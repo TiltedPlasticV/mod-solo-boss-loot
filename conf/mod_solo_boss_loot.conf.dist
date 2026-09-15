@@ -24,13 +24,13 @@
 #
 
 #
-#    SoloBossLoot.Enable
-#        Description: Enable the module (boss loot and world drops).
+#    SoloBossLoot.BossLoot.Enable
+#        Description: Add each boss's own loot when a boss or boss chest is looted.
 #        Default:     1 - Enabled
 #                     0 - Disabled
 #
 
-SoloBossLoot.Enable = 1
+SoloBossLoot.BossLoot.Enable = 1
 
 #
 #    SoloBossLoot.SkipOwnedItems

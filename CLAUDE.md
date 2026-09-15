@@ -13,7 +13,10 @@ Don't use Claude's memory files; anything worth remembering goes here so everyon
   (existing hooks, this module's own `data/sql`).
 - **Never compile or build anything** (no cmake, MSBuild, make, etc.). The developer compiles and tests changes themselves.
   Check code by reading it carefully against the core headers instead.
-- **README.md:** keep it very simple and concise. Never use em-dashes in it.
+- **Docs (README.md, CLAUDE.md, the conf):** when something changes, rewrite the existing text so it describes how things
+  work now. Don't add new sections or notes about the change, and no deprecation or migration notes (the developer is
+  the only user, so settings can simply be renamed). README.md stays very simple and concise, never uses em-dashes,
+  and leaves out anything the config file already makes clear.
 
 ## Who this is for
 A player going solo through the game with playerbots, who should get the fun loot they'd never see on a normal playthrough.
@@ -28,7 +31,9 @@ Goals:
 
 Files:
 - `src/mod_solo_boss_loot.cpp`: all the code
-- `conf/mod_solo_boss_loot.conf.dist`: settings `SoloBossLoot.Enable`, `.SkipOwnedItems`, `.SharedPoolThreshold`, `.WorldDrop.*`
+- `conf/mod_solo_boss_loot.conf.dist`: settings `SoloBossLoot.SkipOwnedItems`, `.SharedPoolThreshold`, `.BossLoot.Enable`, `.WorldDrop.*`.
+  Boss loot and world drops are enabled separately; boss detection, overrides and the creature/reference loot rows
+  are loaded for either, the boss-only item analysis (`BuildBossLoot`) only for boss loot
 - `data/sql/db-world/base/solo_boss_loot_overrides.sql`: overrides table and the boss chest list
 - `apps/world_drop_sim.py`: offline world drop simulator for testers (Python, reads the SQL dumps and config files).
   It mirrors the world drop C++ (`AddDropChances`, `IsWorldDropCandidate`, `BuildWorldDropTable`, `PlayerWantsItem`),
@@ -172,15 +177,13 @@ Decisions (made with the developer):
   - Error: bad settings, unknown override `SourceType`
   - Warn: settings clamped, override rows for missing templates, boss chests without a loot id or loot rows,
     empty overrides table
-  - Info: cache summaries, module or world drops disabled
+  - Info: cache summaries, boss loot or world drops disabled
   - Debug: settings after load, build totals, each boss kill's summary with the items added, each world drop added
   - Trace: per item skip reasons at boss kills (with each real player's reason from `GetUnwantedReason`),
     world drop rolls that added nothing, one line per boss loot table at build time
 - **Cost:** the `LOG_*` macros only evaluate their arguments when the level is on, so describe helpers
   (`DescribeItem`, `DescribePlayers`, ...) go inside the macro call. Item loops check `ShouldLog` once.
   No per-table trace for world drop tables at build time (thousands of them): `apps/world_drop_sim.py` covers that.
-- The developer's old worldserver.conf had `Logger.dlr=5,DLRConsole DLRFile` from the dynamic loot rates fork;
-  that logger name is no longer used.
 
 ## Core facts worth knowing (paths relative to the AzerothCore source root)
 - **Loot flow:** `Loot::FillLoot` (`src/server/game/Loot/LootMgr.cpp`) runs `LootTemplate::Process`, then the

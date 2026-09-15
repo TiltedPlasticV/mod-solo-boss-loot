@@ -38,7 +38,7 @@ To try world drop settings without starting the server, run `apps/world_drop_sim
 
 | Setting | Default | Description |
 |---|---|---|
-| `SoloBossLoot.Enable` | 1 | Turn the module on or off |
+| `SoloBossLoot.BossLoot.Enable` | 1 | Turn boss loot on or off |
 | `SoloBossLoot.SkipOwnedItems` | 1 | Skip items you already have (equipped, in bags or in the bank) |
 | `SoloBossLoot.SharedPoolThreshold` | 3 | Items dropped by more than this many bosses are only added if you keep them (gear, bags, mounts, pets, recipes) |
 | `SoloBossLoot.WorldDrop.Enable` | 1 | Turn world drops on or off |
