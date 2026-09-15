@@ -21,6 +21,7 @@
 #include "DatabaseEnv.h"
 #include "GameObject.h"
 #include "Group.h"
+#include "Log.h"
 #include "LootMgr.h"
 #include "Map.h"
 #include "MiscScript.h"
@@ -50,7 +51,11 @@
 
 namespace
 {
-    constexpr char const* LOG_NAME = "module.solo_boss_loot";
+    // Loggers are set in worldserver.conf. Unset ones fall back to their parent: world_drop -> solo_boss_loot -> module.
+    constexpr char const* LOG_NAME       = "module.solo_boss_loot";            // startup, settings and loot caches
+    constexpr char const* LOG_BOSS       = "module.solo_boss_loot.boss";       // boss kills and boss chests
+    constexpr char const* LOG_WORLD_DROP = "module.solo_boss_loot.world_drop"; // other creature kills
+
     constexpr char const* OVERRIDES_TABLE = "solo_boss_loot_overrides";
     constexpr uint8 MAX_REFERENCE_DEPTH = 8;
 
@@ -77,6 +82,17 @@ namespace
 
     ModuleConfig config;
 
+    // Reads a number setting and clamps it, with a warning when it was out of range
+    float GetClampedOption(char const* name, float defaultValue, float min, float max)
+    {
+        float const value = sConfigMgr->GetOption<float>(name, defaultValue);
+        float const clamped = std::clamp(value, min, max);
+        if (clamped != value)
+            LOG_WARN(LOG_NAME, "SoloBossLoot: {} = {} is out of range ({} to {}), using {}", name, value, min, max, clamped);
+
+        return clamped;
+    }
+
     void LoadConfig()
     {
         config.enabled             = sConfigMgr->GetOption<bool>("SoloBossLoot.Enable", true);
@@ -86,10 +102,16 @@ namespace
         config.worldDropEnabled           = sConfigMgr->GetOption<bool>("SoloBossLoot.WorldDrop.Enable", true);
         config.worldDropMinQuality        = sConfigMgr->GetOption<uint32>("SoloBossLoot.WorldDrop.MinQuality", ITEM_QUALITY_UNCOMMON);
         config.worldDropMaxItemLevel      = sConfigMgr->GetOption<uint32>("SoloBossLoot.WorldDrop.MaxItemLevel", 0);
-        config.worldDropMaxItemChance     = std::clamp(sConfigMgr->GetOption<float>("SoloBossLoot.WorldDrop.MaxItemChance", 5.0f), 0.0f, 99.0f);
-        config.worldDropMaxCombinedChance = std::clamp(sConfigMgr->GetOption<float>("SoloBossLoot.WorldDrop.MaxCombinedChance", 15.0f), 0.0f, 99.0f);
-        config.worldDropCompressionRatio  = std::clamp(sConfigMgr->GetOption<float>("SoloBossLoot.WorldDrop.CompressionRatio", 0.8f), 0.0f, 1.0f);
-        config.worldDropRecipeWeight      = std::max(sConfigMgr->GetOption<float>("SoloBossLoot.WorldDrop.RecipeWeight", 0.75f), 0.0f);
+        config.worldDropMaxItemChance     = GetClampedOption("SoloBossLoot.WorldDrop.MaxItemChance", 5.0f, 0.0f, 99.0f);
+        config.worldDropMaxCombinedChance = GetClampedOption("SoloBossLoot.WorldDrop.MaxCombinedChance", 15.0f, 0.0f, 99.0f);
+        config.worldDropCompressionRatio  = GetClampedOption("SoloBossLoot.WorldDrop.CompressionRatio", 0.8f, 0.0f, 1.0f);
+        config.worldDropRecipeWeight      = sConfigMgr->GetOption<float>("SoloBossLoot.WorldDrop.RecipeWeight", 0.75f);
+
+        if (config.worldDropRecipeWeight < 0.0f)
+        {
+            LOG_WARN(LOG_NAME, "SoloBossLoot: SoloBossLoot.WorldDrop.RecipeWeight = {} is below 0, using 0", config.worldDropRecipeWeight);
+            config.worldDropRecipeWeight = 0.0f;
+        }
 
         std::string const weights = sConfigMgr->GetOption<std::string>("SoloBossLoot.WorldDrop.QualityWeights", "1 3 6");
         std::istringstream stream(weights);
@@ -106,6 +128,14 @@ namespace
             LOG_ERROR(LOG_NAME, "SoloBossLoot: SoloBossLoot.WorldDrop.QualityWeights \"{}\" needs three numbers of 0 or more, "
                 "using \"1 3 6\"", weights);
         }
+
+        LOG_DEBUG(LOG_NAME, "SoloBossLoot: Settings: Enable {}, SkipOwnedItems {}, SharedPoolThreshold {}, WorldDrop.Enable {}, "
+            "WorldDrop.MinQuality {}, WorldDrop.MaxItemLevel {}, WorldDrop.MaxItemChance {}, WorldDrop.MaxCombinedChance {}, "
+            "WorldDrop.CompressionRatio {}, WorldDrop.QualityWeights \"{} {} {}\", WorldDrop.RecipeWeight {}",
+            config.enabled, config.skipOwnedItems, config.sharedPoolThreshold, config.worldDropEnabled,
+            config.worldDropMinQuality, config.worldDropMaxItemLevel, config.worldDropMaxItemChance, config.worldDropMaxCombinedChance,
+            config.worldDropCompressionRatio, config.worldDropQualityWeights[0], config.worldDropQualityWeights[1],
+            config.worldDropQualityWeights[2], config.worldDropRecipeWeight);
     }
 
     // ---------------------------------------------------------------------------
@@ -679,13 +709,19 @@ namespace
                 switch (sourceType)
                 {
                     case OVERRIDE_CREATURE:
+                        if (!sObjectMgr->GetCreatureTemplate(entry))
+                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has creature {}, which isn't in creature_template", OVERRIDES_TABLE, entry);
                         cache->creatureOverrides[entry] = include;
                         break;
                     case OVERRIDE_GAMEOBJECT:
-                        if (include)
+                        if (!sObjectMgr->GetGameObjectTemplate(entry))
+                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has gameobject {}, which isn't in gameobject_template", OVERRIDES_TABLE, entry);
+                        else if (include)
                             cache->bossChests.insert(entry);
                         break;
                     case OVERRIDE_ITEM:
+                        if (!sObjectMgr->GetItemTemplate(entry))
+                            LOG_WARN(LOG_NAME, "SoloBossLoot: `{}` has item {}, which isn't in item_template", OVERRIDES_TABLE, entry);
                         (include ? forcedItems : excludedItems).insert(entry);
                         break;
                     default:
@@ -741,11 +777,15 @@ namespace
             if (!bossDifficultyEntries.count(entry))
                 worldDropLootIds.insert(lootId);
 
-        std::unordered_set<uint32> bossChestLootIds;
+        std::unordered_map<uint32, uint32> bossChestLootIds; // loot id -> chest entry
         for (uint32 chestEntry : cache->bossChests)
-            if (GameObjectTemplate const* chestTemplate = sObjectMgr->GetGameObjectTemplate(chestEntry))
-                if (uint32 const lootId = chestTemplate->GetLootId())
-                    bossChestLootIds.insert(lootId);
+        {
+            GameObjectTemplate const* chestTemplate = sObjectMgr->GetGameObjectTemplate(chestEntry);
+            if (uint32 const lootId = chestTemplate->GetLootId())
+                bossChestLootIds.try_emplace(lootId, chestEntry);
+            else
+                LOG_WARN(LOG_NAME, "SoloBossLoot: Boss chest {} ({}) has no loot id, so it gets no extra loot", chestTemplate->name, chestEntry);
+        }
 
         // Anything reachable from a non-boss loot table is not boss loot
         LootRows const referenceRows = LoadLootRows("reference_loot_template");
@@ -790,6 +830,11 @@ namespace
                 markNonBoss(rows);
         }
 
+        for (auto const& [lootId, chestEntry] : bossChestLootIds)
+            if (!gameobjectRows.count(lootId))
+                LOG_WARN(LOG_NAME, "SoloBossLoot: Boss chest {} has loot id {}, which has no gameobject_loot_template rows",
+                    chestEntry, lootId);
+
         for (char const* table : { "fishing_loot_template", "item_loot_template", "pickpocketing_loot_template",
             "skinning_loot_template", "mail_loot_template", "spell_loot_template", "milling_loot_template",
             "prospecting_loot_template", "disenchant_loot_template", "player_loot_template" })
@@ -810,15 +855,29 @@ namespace
                 ++bossTableCount[itemId];
         }
 
+        // Why items were left out: per boss table (trace) and in total (debug)
+        struct SkipCounts
+        {
+            uint32 notBossOnly = 0;
+            uint32 lowQuality = 0;
+            uint32 sharedPool = 0;
+            uint32 excluded = 0;
+        };
+
+        SkipCounts totalSkipped;
         uint32 itemCount = 0;
         for (size_t i = 0; i < bossTables.size(); ++i)
         {
             BossItemList items;
+            SkipCounts skipped;
 
             for (auto& [itemId, item] : tableItems[i])
             {
                 if (excludedItems.count(itemId))
+                {
+                    ++skipped.excluded;
                     continue;
+                }
 
                 ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
                 if (!proto)
@@ -827,17 +886,35 @@ namespace
                 if (!forcedItems.count(itemId))
                 {
                     if (nonBossItems.count(itemId))
+                    {
+                        ++skipped.notBossOnly;
                         continue; // also drops from trash, world-drop lists, containers, ...
+                    }
 
                     if (proto->Quality == ITEM_QUALITY_POOR || (IsGear(proto) && proto->Quality < ITEM_QUALITY_UNCOMMON))
+                    {
+                        ++skipped.lowQuality;
                         continue;
+                    }
 
                     if (bossTableCount[itemId] > config.sharedPoolThreshold && !IsKeepable(proto))
+                    {
+                        ++skipped.sharedPool;
                         continue; // shared by many bosses and gets used up: would repeat at every boss
+                    }
                 }
 
                 items.push_back(std::move(item));
             }
+
+            LOG_TRACE(LOG_NAME, "SoloBossLoot: Boss {} loot table {}: {} items kept, skipped {} not boss-only, {} grey or white gear, "
+                "{} shared pool, {} excluded by override", bossTables[i].isChest ? "chest" : "creature", bossTables[i].lootId,
+                items.size(), skipped.notBossOnly, skipped.lowQuality, skipped.sharedPool, skipped.excluded);
+
+            totalSkipped.notBossOnly += skipped.notBossOnly;
+            totalSkipped.lowQuality += skipped.lowQuality;
+            totalSkipped.sharedPool += skipped.sharedPool;
+            totalSkipped.excluded += skipped.excluded;
 
             if (items.empty())
                 continue;
@@ -850,8 +927,14 @@ namespace
         LOG_INFO(LOG_NAME, "SoloBossLoot: Boss loot cache built: {} creature and {} chest loot tables, {} items, {} overrides in {} ms",
             cache->creatureLoot.size(), cache->chestLoot.size(), itemCount, overrideCount, GetMSTimeDiffToNow(startTime));
 
+        LOG_DEBUG(LOG_NAME, "SoloBossLoot: Boss loot items skipped (counted once per loot table): {} not boss-only, "
+            "{} grey or white gear, {} shared pool, {} excluded by override",
+            totalSkipped.notBossOnly, totalSkipped.lowQuality, totalSkipped.sharedPool, totalSkipped.excluded);
+
         if (config.worldDropEnabled)
             BuildWorldDropLoot(*cache, worldDropLootIds, creatureRows, referenceRows);
+        else
+            LOG_INFO(LOG_NAME, "SoloBossLoot: World drops disabled");
 
         return cache;
     }
@@ -1000,29 +1083,87 @@ namespace
             && player->HasSpell(static_cast<uint32>(learnSpell.SpellId));
     }
 
-    // Class, gear type, learned, profession and owned checks. Loot conditions (LootItem::AllowedForPlayer) are checked
-    // by the caller.
-    bool PlayerWantsItem(Player const* player, ItemTemplate const* proto, bool needsProfession)
+    // Why a player doesn't want an item, or nullptr if they do: class, gear type, learned, profession and owned checks.
+    // Loot conditions (LootItem::AllowedForPlayer) are checked by the caller.
+    char const* GetUnwantedReason(Player const* player, ItemTemplate const* proto, bool needsProfession)
     {
         if (proto->AllowableClass && !(proto->AllowableClass & player->getClassMask()))
-            return false; // tier tokens, class books, ... for another class
+            return "other class"; // tier tokens, class books, ...
 
         if (proto->AllowableRace && !(proto->AllowableRace & player->getRaceMask()))
-            return false;
+            return "other race";
 
         if (IsGear(proto) && !IsGearUsableBy(player, proto))
-            return false;
+            return "gear type";
 
         if (IsAlreadyLearned(player, proto))
-            return false;
+            return "already learned";
 
         if (needsProfession && proto->Class == ITEM_CLASS_RECIPE && proto->RequiredSkill && !player->HasSkill(proto->RequiredSkill))
-            return false; // recipe for a profession they don't have
+            return "no profession"; // recipe for a profession they don't have
 
         if (config.skipOwnedItems && player->HasItemCount(proto->ItemId, 1, true))
-            return false;
+            return "owned";
 
-        return true;
+        return nullptr;
+    }
+
+    bool PlayerWantsItem(Player const* player, ItemTemplate const* proto, bool needsProfession)
+    {
+        return !GetUnwantedReason(player, proto, needsProfession);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Log text. Only call these inside LOG_* macros, which skip their arguments when the level is off.
+    // ---------------------------------------------------------------------------
+    std::string DescribeSource(WorldObject const* source)
+    {
+        return fmt::format("{} ({} {})", source->GetName(),
+            source->GetTypeId() == TYPEID_GAMEOBJECT ? "gameobject" : "creature", source->GetEntry());
+    }
+
+    std::string DescribeItem(uint32 itemId)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        return fmt::format("{} ({})", proto ? proto->Name1 : std::string("unknown item"), itemId);
+    }
+
+    std::string DescribeItems(std::vector<LootStoreItem> const& items)
+    {
+        if (items.empty())
+            return "none";
+
+        std::string text;
+        for (LootStoreItem const& item : items)
+            text += (text.empty() ? "" : ", ") + DescribeItem(item.itemid);
+
+        return text;
+    }
+
+    std::string DescribePlayers(std::vector<Player*> const& players)
+    {
+        std::string text;
+        for (Player const* player : players)
+            text += (text.empty() ? "" : ", ") + player->GetName();
+
+        return text;
+    }
+
+    // Each real player's reason for not wanting a boss item, e.g. "Alice: owned, Bob: gear type"
+    std::string DescribeUnwanted(std::vector<Player*> const& players, ItemTemplate const* proto, LootItem const& lootItem,
+        ObjectGuid source)
+    {
+        std::string text;
+        for (Player const* player : players)
+        {
+            char const* reason = GetUnwantedReason(player, proto, false);
+            if (!reason && !lootItem.AllowedForPlayer(player, source))
+                reason = "loot conditions";
+
+            text += fmt::format("{}{}: {}", text.empty() ? "" : ", ", player->GetName(), reason ? reason : "wants it");
+        }
+
+        return text;
     }
 
     bool IsBoss(LootCache const& cache, Creature const* creature)
@@ -1045,7 +1186,7 @@ namespace
     }
 
     BossItemList const* FindCreatureBossItems(LootCache const& cache, Map* map, ObjectGuid source,
-        LootStore const& store, LootTemplate const* tab, std::string& sourceName)
+        LootStore const& store, LootTemplate const* tab, WorldObject const*& sourceObject)
     {
         if (!source.IsCreature())
             return nullptr;
@@ -1056,18 +1197,24 @@ namespace
 
         uint32 const lootId = creature->GetCreatureTemplate()->lootid;
         if (!lootId || store.GetLootFor(lootId) != tab)
-            return nullptr; // loot filled from some other table, e.g. by a script
+        {
+            LOG_DEBUG(LOG_BOSS, "SoloBossLoot: [{}] Loot came from another loot table (a script?), nothing added", DescribeSource(creature));
+            return nullptr;
+        }
 
         auto itr = cache.creatureLoot.find(lootId);
         if (itr == cache.creatureLoot.end())
+        {
+            LOG_DEBUG(LOG_BOSS, "SoloBossLoot: [{}] Loot table {} has no boss-only items, nothing added", DescribeSource(creature), lootId);
             return nullptr;
+        }
 
-        sourceName = fmt::format("{} (creature {})", creature->GetName(), creature->GetEntry());
+        sourceObject = creature;
         return &itr->second;
     }
 
     BossItemList const* FindChestBossItems(LootCache const& cache, Map* map, ObjectGuid source,
-        LootStore const& store, LootTemplate const* tab, std::string& sourceName)
+        LootStore const& store, LootTemplate const* tab, WorldObject const*& sourceObject)
     {
         if (!source.IsGameObject())
             return nullptr;
@@ -1078,23 +1225,30 @@ namespace
 
         uint32 const lootId = chest->GetGOInfo()->GetLootId();
         if (!lootId || store.GetLootFor(lootId) != tab)
+        {
+            LOG_DEBUG(LOG_BOSS, "SoloBossLoot: [{}] Loot came from another loot table (a script?), nothing added", DescribeSource(chest));
             return nullptr;
+        }
 
         auto itr = cache.chestLoot.find(lootId);
         if (itr == cache.chestLoot.end())
+        {
+            LOG_DEBUG(LOG_BOSS, "SoloBossLoot: [{}] Loot table {} has no boss-only items, nothing added", DescribeSource(chest), lootId);
             return nullptr;
+        }
 
-        sourceName = fmt::format("{} (gameobject {})", chest->GetName(), chest->GetEntry());
+        sourceObject = chest;
         return &itr->second;
     }
 
     void AddBossLoot(LootCache const& cache, Loot* loot, LootTemplate const* tab, LootStore const& store, Player* lootOwner,
         uint16 lootMode, Map* map, bool isCreatureLoot)
     {
-        std::string sourceName;
+        ObjectGuid const source = loot->sourceWorldObjectGUID;
+        WorldObject const* sourceObject = nullptr;
         BossItemList const* bossItems = isCreatureLoot
-            ? FindCreatureBossItems(cache, map, loot->sourceWorldObjectGUID, store, tab, sourceName)
-            : FindChestBossItems(cache, map, loot->sourceWorldObjectGUID, store, tab, sourceName);
+            ? FindCreatureBossItems(cache, map, source, store, tab, sourceObject)
+            : FindChestBossItems(cache, map, source, store, tab, sourceObject);
 
         if (!bossItems)
             return;
@@ -1102,7 +1256,7 @@ namespace
         std::vector<Player*> const players = GetRealPlayers(lootOwner);
         if (players.empty())
         {
-            LOG_DEBUG(LOG_NAME, "SoloBossLoot: [{}] No real players in the instance, nothing added", sourceName);
+            LOG_DEBUG(LOG_BOSS, "SoloBossLoot: [{}] No real players in the instance, nothing added", DescribeSource(sourceObject));
             return;
         }
 
@@ -1112,11 +1266,27 @@ namespace
         for (LootItem const& item : loot->quest_items)
             present.insert(item.itemid);
 
+        // Checked once here instead of for every item
+        bool const trace = sLog->ShouldLog(LOG_BOSS, LOG_LEVEL_TRACE);
+
         std::vector<LootStoreItem> picks;
         for (BossItem const& bossItem : *bossItems)
         {
-            if (present.count(bossItem.itemId) || !DropsInLootMode(bossItem, lootMode))
+            if (present.count(bossItem.itemId))
+            {
+                if (trace)
+                    LOG_TRACE(LOG_BOSS, "SoloBossLoot: [{}] {} skipped: already in the loot window",
+                        DescribeSource(sourceObject), DescribeItem(bossItem.itemId));
                 continue;
+            }
+
+            if (!DropsInLootMode(bossItem, lootMode))
+            {
+                if (trace)
+                    LOG_TRACE(LOG_BOSS, "SoloBossLoot: [{}] {} skipped: doesn't drop in loot mode {}",
+                        DescribeSource(sourceObject), DescribeItem(bossItem.itemId), lootMode);
+                continue;
+            }
 
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(bossItem.itemId);
             if (!proto)
@@ -1130,11 +1300,14 @@ namespace
             bool const wanted = std::any_of(players.begin(), players.end(), [&](Player const* player)
             {
                 // The same check the loot window uses: conditions, faction, hidden recipes, finished quest starters, ...
-                return PlayerWantsItem(player, proto, false) && lootItem.AllowedForPlayer(player, loot->sourceWorldObjectGUID);
+                return PlayerWantsItem(player, proto, false) && lootItem.AllowedForPlayer(player, source);
             });
 
             if (wanted)
                 picks.push_back(std::move(storeItem));
+            else if (trace)
+                LOG_TRACE(LOG_BOSS, "SoloBossLoot: [{}] {} skipped: not wanted ({})",
+                    DescribeSource(sourceObject), DescribeItem(bossItem.itemId), DescribeUnwanted(players, proto, lootItem, source));
         }
 
         size_t const freeSlots = loot->items.size() < MAX_NR_LOOT_ITEMS ? MAX_NR_LOOT_ITEMS - loot->items.size() : 0;
@@ -1144,14 +1317,21 @@ namespace
         if (picks.size() > freeSlots)
         {
             Acore::Containers::RandomShuffle(picks);
+
+            if (trace)
+                for (auto itr = picks.begin() + freeSlots; itr != picks.end(); ++itr)
+                    LOG_TRACE(LOG_BOSS, "SoloBossLoot: [{}] {} skipped: not picked ({} wanted items for {} free slots)",
+                        DescribeSource(sourceObject), DescribeItem(itr->itemid), wantedCount, freeSlots);
+
             picks.erase(picks.begin() + freeSlots, picks.end());
         }
 
         for (LootStoreItem const& pick : picks)
             loot->AddItem(pick);
 
-        LOG_DEBUG(LOG_NAME, "SoloBossLoot: [{}] {} boss items, {} wanted by {} real player(s), {} free slots, {} added",
-            sourceName, bossItems->size(), wantedCount, players.size(), freeSlots, picks.size());
+        LOG_DEBUG(LOG_BOSS, "SoloBossLoot: [{}] {} boss items, {} wanted by real players ({}), {} free slots, {} added: {}",
+            DescribeSource(sourceObject), bossItems->size(), wantedCount, DescribePlayers(players), freeSlots, picks.size(),
+            DescribeItems(picks));
     }
 
     // ---------------------------------------------------------------------------
@@ -1179,12 +1359,25 @@ namespace
         WorldDropTable const& table = *itr->second;
 
         // One roll for the whole table first, so the checks below only run when something could drop
-        if (!roll_chance_f(table.chance * 100.0f) || loot->items.size() >= MAX_NR_LOOT_ITEMS)
+        if (!roll_chance_f(table.chance * 100.0f))
+        {
+            LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: table roll ({:.2f}%) missed",
+                DescribeSource(creature), table.chance * 100.0f);
             return;
+        }
+
+        if (loot->items.size() >= MAX_NR_LOOT_ITEMS)
+        {
+            LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: the loot window is full", DescribeSource(creature));
+            return;
+        }
 
         std::vector<Player*> const players = GetRealPlayers(lootOwner, creature);
         if (players.empty())
+        {
+            LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: no real player close enough", DescribeSource(creature));
             return;
+        }
 
         std::unordered_set<uint32> present;
         for (LootItem const& item : loot->items)
@@ -1218,13 +1411,21 @@ namespace
         }
 
         if (wanted.empty())
+        {
+            LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: none of its {} rare items are wanted by real players ({})",
+                DescribeSource(creature), table.items.size(), DescribePlayers(players));
             return;
+        }
 
         // Items nobody wants don't drop, and aren't replaced by wanted ones, so each wanted item keeps its own chance
-        if (!roll_chance_f(float((1.0 - missAllWanted) / table.chance * 100.0)))
+        float const wantedChance = float((1.0 - missAllWanted) / table.chance * 100.0);
+        if (!roll_chance_f(wantedChance))
+        {
+            LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: {} of {} rare items wanted, wanted roll ({:.2f}%) missed",
+                DescribeSource(creature), wanted.size(), table.items.size(), wantedChance);
             return;
+        }
 
-        std::string const sourceName = fmt::format("{} (creature {})", creature->GetName(), creature->GetEntry());
         size_t const wantedCount = wanted.size();
 
         while (!wanted.empty())
@@ -1247,14 +1448,21 @@ namespace
             if (allowed)
             {
                 loot->AddItem(storeItem);
-                LOG_DEBUG(LOG_NAME, "SoloBossLoot: [{}] World drop: added item {} ({} of {} rare items wanted by {} real player(s))",
-                    sourceName, pick.itemId, wantedCount, table.items.size(), players.size());
+                LOG_DEBUG(LOG_WORLD_DROP, "SoloBossLoot: [{}] World drop: added {} ({:.3f}% extra roll, {} of {} rare items wanted by {})",
+                    DescribeSource(creature), DescribeItem(pick.itemId), pick.chance * 100.0f, wantedCount, table.items.size(),
+                    DescribePlayers(players));
                 return;
             }
+
+            LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] {} not picked: its loot conditions don't allow any real player",
+                DescribeSource(creature), DescribeItem(pick.itemId));
 
             wanted.erase(wanted.begin() + index);
             weights.erase(weights.begin() + index);
         }
+
+        LOG_TRACE(LOG_WORLD_DROP, "SoloBossLoot: [{}] No world drop: loot conditions ruled out all {} wanted items",
+            DescribeSource(creature), wantedCount);
     }
 
     // ---------------------------------------------------------------------------

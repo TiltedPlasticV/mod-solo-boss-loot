@@ -50,6 +50,20 @@ To try world drop settings without starting the server, run `apps/world_drop_sim
 | `SoloBossLoot.WorldDrop.QualityWeights` | "1 3 6" | Weights for green, blue and epic items |
 | `SoloBossLoot.WorldDrop.RecipeWeight` | 0.75 | Extra weight for recipes |
 
+## Logging
+
+Add `Logger` lines to `worldserver.conf` (they don't work in the module config):
+
+- `Logger.module.solo_boss_loot`: startup and settings
+- `Logger.module.solo_boss_loot.boss`: boss kills and boss chests
+- `Logger.module.solo_boss_loot.world_drop`: other creature kills
+
+Level 5 (debug) shows what each kill added. Level 6 (trace) also shows why items were skipped. For example:
+
+```
+Logger.module.solo_boss_loot=5,Console Server
+```
+
 ## Overrides
 
 The `solo_boss_loot_overrides` world table lists the boss chests, and lets you mark extra bosses or force items in or out. The SQL file explains the columns.

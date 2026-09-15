@@ -164,6 +164,24 @@ Decisions (made with the developer):
 - `.reload` of loot tables alone doesn't rebuild the cache; run `.reload config` afterwards.
 - Loot modes other than default (rare for non-bosses) get no world drops.
 
+## Logging
+- **Loggers:** `module.solo_boss_loot` (`LOG_NAME`: startup, settings, cache builds), `.boss` (`LOG_BOSS`: boss kills
+  and chests), `.world_drop` (`LOG_WORLD_DROP`: other creature kills). Unset loggers fall back to their parent,
+  then to `Logger.module`. They must be set in worldserver.conf (see core facts).
+- **Levels:**
+  - Error: bad settings, unknown override `SourceType`
+  - Warn: settings clamped, override rows for missing templates, boss chests without a loot id or loot rows,
+    empty overrides table
+  - Info: cache summaries, module or world drops disabled
+  - Debug: settings after load, build totals, each boss kill's summary with the items added, each world drop added
+  - Trace: per item skip reasons at boss kills (with each real player's reason from `GetUnwantedReason`),
+    world drop rolls that added nothing, one line per boss loot table at build time
+- **Cost:** the `LOG_*` macros only evaluate their arguments when the level is on, so describe helpers
+  (`DescribeItem`, `DescribePlayers`, ...) go inside the macro call. Item loops check `ShouldLog` once.
+  No per-table trace for world drop tables at build time (thousands of them): `apps/world_drop_sim.py` covers that.
+- The developer's old worldserver.conf had `Logger.dlr=5,DLRConsole DLRFile` from the dynamic loot rates fork;
+  that logger name is no longer used.
+
 ## Core facts worth knowing (paths relative to the AzerothCore source root)
 - **Loot flow:** `Loot::FillLoot` (`src/server/game/Loot/LootMgr.cpp`) runs `LootTemplate::Process`, then the
   `OnAfterLootTemplateProcess` hook, and only then assigns group loot rights.
@@ -185,6 +203,10 @@ Decisions (made with the developer):
 - **Config and startup:** `.reload config` calls `OnBeforeConfigLoad` / `OnAfterConfigLoad(reload=true)`
   (`src/server/game/World/World.cpp`). Rates (`WorldConfig::Initialize`) are loaded before `OnAfterConfigLoad`.
   `OnStartup` runs from worldserver `Main.cpp` after `SetInitialWorldSettings`.
+- **Logging config:** worldserver `Main.cpp` calls `sLog->Initialize` (reads `Appender.*` / `Logger.*`) before
+  `LoadModulesConfigs`, so `Logger` lines in a module .conf are ignored at startup; they belong in worldserver.conf.
+  `.reload config` re-reads loggers (`World::LoadConfigSettings`). `Log::GetLoggerByType` falls back to the parent by
+  cutting at the last `.`, then `root`. Appenders also filter by their own level.
 - **Module loader:** CMake generates a call to `Add<folder name with - replaced by _>Scripts()` (`modules/CMakeLists.txt`),
   so the module folder must be named `mod-solo-boss-loot` to match `Addmod_solo_boss_lootScripts()` in the loader file.
 - **Module SQL:** the DB updater applies any `data/sql/<dir>` whose name contains the DB name (`world`), recursively

@@ -153,3 +153,33 @@ SoloBossLoot.WorldDrop.QualityWeights = "1 3 6"
 #
 
 SoloBossLoot.WorldDrop.RecipeWeight = 0.75
+
+########################################
+# Logging
+########################################
+#
+#    Logger lines only work in worldserver.conf (put them after `Logger.module=4,Console Server`).
+#    The server sets up logging before it reads module config files, so they are ignored here.
+#
+#    Logger.module.solo_boss_loot             Startup, settings and the loot caches
+#    Logger.module.solo_boss_loot.boss        Boss kills and boss chests
+#    Logger.module.solo_boss_loot.world_drop  Other creature kills
+#
+#    A logger you don't set uses the one above it (world_drop -> solo_boss_loot -> module).
+#
+#    Levels:
+#        2 - Error:   bad settings or override rows
+#        3 - Warning: settings out of range, override rows for things that don't exist,
+#                     boss chests without loot
+#        4 - Info:    loot cache summaries at startup and on .reload config
+#        5 - Debug:   settings, what each boss kill added, each world drop added
+#        6 - Trace:   why each item was skipped at a boss kill, world drop rolls that added nothing,
+#                     one line per boss loot table at startup (many lines)
+#
+#    An appender only writes messages up to its own level (Appender.Name=Type,Level,...).
+#
+#    Example (debug for everything, trace for boss kills in its own file):
+#        Appender.SoloBossLoot=2,6,7,SoloBossLoot.log,w
+#        Logger.module.solo_boss_loot=5,Console SoloBossLoot
+#        Logger.module.solo_boss_loot.boss=6,Console SoloBossLoot
+#
